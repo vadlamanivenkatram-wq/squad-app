@@ -104,30 +104,45 @@ function WelcomeScreen({ onGetStarted }) {
   );
 }
 
-// ─── LOGIN / SETUP ───────────────────────────────────────────────────────────
+// ─── LOGIN / SIGNUP ───────────────────────────────────────────────────────────
 
 function LoginScreen({ onLogin }) {
-  const [view, setView] = useState("pick");
-  const [newName, setNewName] = useState("");
-  const [newColor, setNewColor] = useState(PALETTE[0]);
-  const [setupStep, setSetupStep] = useState("name");
+  const [view, setView] = useState("login"); // login | signup
+  const [name, setName] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [color, setColor] = useState(PALETTE[0]);
+  const [step, setStep] = useState("creds"); // creds | color
+  const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [existingUsers, setExistingUsers] = useState([]);
-  const [loadingUsers, setLoadingUsers] = useState(true);
+  const [showPass, setShowPass] = useState(false);
 
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, "users"), snap => {
-      setExistingUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoadingUsers(false);
-    });
-    return unsub;
-  }, []);
+  const inputStyle = { width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "14px 16px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, boxSizing: "border-box", outline: "none", marginBottom: 12 };
 
-  const handlePick = (u) => { saveLocalUser(u); onLogin(u); };
+  const handleLogin = async () => {
+    if (!username.trim() || !password.trim()) { setError("Please fill in all fields."); return; }
+    setLoading(true); setError("");
+    const snap = await getDocs(query(collection(db, "users"), where("username", "==", username.trim().toLowerCase())));
+    if (snap.empty) { setError("No account found with that username."); setLoading(false); return; }
+    const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
+    if (u.password !== password) { setError("Incorrect password."); setLoading(false); return; }
+    saveLocalUser(u);
+    onLogin(u);
+  };
 
-  const finishSetup = async () => {
+  const handleSignup = async () => {
+    if (step === "creds") {
+      if (!name.trim() || !username.trim() || !password.trim()) { setError("Please fill in all fields."); return; }
+      if (password.length < 4) { setError("Password must be at least 4 characters."); return; }
+      setLoading(true); setError("");
+      const snap = await getDocs(query(collection(db, "users"), where("username", "==", username.trim().toLowerCase())));
+      if (!snap.empty) { setError("Username already taken, try another."); setLoading(false); return; }
+      setLoading(false);
+      setStep("color");
+      return;
+    }
     setLoading(true);
-    const newUser = { name: newName.trim(), avatar: getInitials(newName), color: newColor, attended: 0, total: 0, streak: 0 };
+    const newUser = { name: name.trim(), username: username.trim().toLowerCase(), password, avatar: getInitials(name), color, attended: 0, total: 0, streak: 0 };
     const ref = await addDoc(collection(db, "users"), newUser);
     const u = { id: ref.id, ...newUser };
     saveLocalUser(u);
@@ -135,63 +150,65 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: FONTS.body, padding: "0 20px" }}>
-      <div style={{ textAlign: "center", marginBottom: 40 }}>
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: FONTS.body, padding: "0 24px" }}>
+      <div style={{ textAlign: "center", marginBottom: 36 }}>
         <div style={{ fontSize: 44, fontFamily: FONTS.display, fontWeight: 800, color: COLORS.text, letterSpacing: -2 }}>squad<span style={{ color: COLORS.accent }}>.</span></div>
-        <div style={{ color: COLORS.muted, fontSize: 14, marginTop: 6 }}>your crew, organized</div>
+        <div style={{ color: COLORS.muted, fontSize: 14, marginTop: 6 }}>your crew, one tap away</div>
       </div>
 
-      {view === "pick" && (
-        <div style={{ width: "100%", maxWidth: 400 }}>
-          <div style={{ color: COLORS.muted, fontSize: 13, textAlign: "center", marginBottom: 20, letterSpacing: 1 }}>WHO ARE YOU?</div>
-          {loadingUsers ? <div style={{ color: COLORS.muted, textAlign: "center" }}>Loading...</div> : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
-              {existingUsers.map(u => (
-                <div key={u.id} onClick={() => handlePick(u)} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: "16px 8px", textAlign: "center", cursor: "pointer", transition: "all 0.15s" }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = u.color; e.currentTarget.style.background = u.color + "11"; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = COLORS.border; e.currentTarget.style.background = COLORS.card; }}>
-                  <Avatar user={u} size={44} />
-                  <div style={{ marginTop: 8, fontSize: 13, fontWeight: 600, color: COLORS.text }}>{u.name}</div>
-                </div>
-              ))}
-              <div onClick={() => { setView("setup"); setSetupStep("name"); setNewName(""); setNewColor(PALETTE[existingUsers.length % PALETTE.length]); }} style={{ background: "transparent", border: `1px dashed ${COLORS.border}`, borderRadius: 16, padding: "16px 8px", textAlign: "center", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.15s", minHeight: 90 }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = COLORS.accent; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = COLORS.border; }}>
-                <div style={{ width: 44, height: 44, borderRadius: "50%", border: `2px dashed ${COLORS.muted}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: COLORS.muted }}>+</div>
-                <div style={{ fontSize: 12, color: COLORS.muted }}>Add me</div>
-              </div>
-            </div>
-          )}
+      <div style={{ width: "100%", maxWidth: 360 }}>
+        {/* Tabs */}
+        <div style={{ display: "flex", background: COLORS.subtle, borderRadius: 14, padding: 4, marginBottom: 28 }}>
+          {["login", "signup"].map(t => (
+            <button key={t} onClick={() => { setView(t); setError(""); setStep("creds"); }} style={{ flex: 1, padding: "10px", border: "none", borderRadius: 10, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 600, fontSize: 14, background: view === t ? COLORS.accent : "transparent", color: view === t ? "#fff" : COLORS.muted, transition: "all 0.15s" }}>
+              {t === "login" ? "Log In" : "Sign Up"}
+            </button>
+          ))}
         </div>
-      )}
 
-      {view === "setup" && (
-        <div style={{ width: "100%", maxWidth: 340 }}>
-          {setupStep === "name" && (
-            <>
-              <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.text, textAlign: "center", marginBottom: 6 }}>What's your name?</div>
-              <div style={{ fontSize: 13, color: COLORS.muted, textAlign: "center", marginBottom: 24 }}>This is how your crew will see you</div>
-              <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} placeholder="Your name"
-                onKeyDown={e => { if (e.key === "Enter" && newName.trim().length >= 2) setSetupStep("color"); }}
-                style={{ width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "14px 16px", color: COLORS.text, fontSize: 18, fontFamily: FONTS.body, boxSizing: "border-box", textAlign: "center", outline: "none", marginBottom: 20 }} />
-              {newName.trim().length >= 2 && <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}><Avatar user={{ avatar: getInitials(newName), color: newColor }} size={56} /></div>}
-              <Btn onClick={() => setSetupStep("color")} disabled={newName.trim().length < 2} style={{ width: "100%" }}>Continue →</Btn>
-              <div style={{ textAlign: "center", marginTop: 14 }}><Btn variant="ghost" onClick={() => setView("pick")} style={{ fontSize: 13 }}>← Back</Btn></div>
-            </>
-          )}
-          {setupStep === "color" && (
-            <>
-              <div style={{ fontSize: 16, fontWeight: 700, color: COLORS.text, textAlign: "center", marginBottom: 6 }}>Pick your colour</div>
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}><Avatar user={{ avatar: getInitials(newName), color: newColor }} size={64} /></div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 28 }}>
-                {PALETTE.map(c => <div key={c} onClick={() => setNewColor(c)} style={{ width: 38, height: 38, borderRadius: "50%", background: c, cursor: "pointer", border: newColor === c ? `3px solid #fff` : `3px solid transparent`, boxShadow: newColor === c ? `0 0 0 2px ${c}` : "none", transition: "all 0.15s" }} />)}
-              </div>
-              <Btn onClick={finishSetup} disabled={loading} style={{ width: "100%" }}>{loading ? "Creating..." : "Let's go 🚀"}</Btn>
-              <div style={{ textAlign: "center", marginTop: 14 }}><Btn variant="ghost" onClick={() => setSetupStep("name")} style={{ fontSize: 13 }}>← Back</Btn></div>
-            </>
-          )}
-        </div>
-      )}
+        {view === "login" && (
+          <>
+            <input value={username} onChange={e => { setUsername(e.target.value); setError(""); }} placeholder="Username" style={inputStyle} />
+            <div style={{ position: "relative", marginBottom: 12 }}>
+              <input value={password} onChange={e => { setPassword(e.target.value); setError(""); }} placeholder="Password" type={showPass ? "text" : "password"}
+                style={{ ...inputStyle, marginBottom: 0, paddingRight: 48 }}
+                onKeyDown={e => { if (e.key === "Enter") handleLogin(); }} />
+              <button onClick={() => setShowPass(s => !s)} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: COLORS.muted, cursor: "pointer", fontSize: 13 }}>{showPass ? "Hide" : "Show"}</button>
+            </div>
+            {error && <div style={{ fontSize: 13, color: COLORS.red, marginBottom: 12 }}>{error}</div>}
+            <Btn onClick={handleLogin} disabled={loading} style={{ width: "100%", padding: "14px" }}>{loading ? "Logging in..." : "Log In"}</Btn>
+          </>
+        )}
+
+        {view === "signup" && step === "creds" && (
+          <>
+            <input value={name} onChange={e => { setName(e.target.value); setError(""); }} placeholder="Your name" style={inputStyle} />
+            <input value={username} onChange={e => { setUsername(e.target.value); setError(""); }} placeholder="Choose a username" style={inputStyle} />
+            <div style={{ position: "relative", marginBottom: 12 }}>
+              <input value={password} onChange={e => { setPassword(e.target.value); setError(""); }} placeholder="Choose a password (min 4 chars)" type={showPass ? "text" : "password"}
+                style={{ ...inputStyle, marginBottom: 0, paddingRight: 48 }} />
+              <button onClick={() => setShowPass(s => !s)} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: COLORS.muted, cursor: "pointer", fontSize: 13 }}>{showPass ? "Hide" : "Show"}</button>
+            </div>
+            {error && <div style={{ fontSize: 13, color: COLORS.red, marginBottom: 12 }}>{error}</div>}
+            <Btn onClick={handleSignup} disabled={loading} style={{ width: "100%", padding: "14px" }}>{loading ? "Checking..." : "Continue →"}</Btn>
+          </>
+        )}
+
+        {view === "signup" && step === "color" && (
+          <>
+            <div style={{ textAlign: "center", marginBottom: 20 }}>
+              <Avatar user={{ avatar: getInitials(name), color }} size={64} />
+              <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginTop: 10 }}>Hey {name.split(" ")[0]}! Pick your colour</div>
+              <div style={{ fontSize: 13, color: COLORS.muted, marginTop: 4 }}>This is how your crew will see you</div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center", marginBottom: 28 }}>
+              {PALETTE.map(c => <div key={c} onClick={() => setColor(c)} style={{ width: 40, height: 40, borderRadius: "50%", background: c, cursor: "pointer", border: color === c ? `3px solid #fff` : `3px solid transparent`, boxShadow: color === c ? `0 0 0 2px ${c}` : "none", transition: "all 0.15s" }} />)}
+            </div>
+            <Btn onClick={handleSignup} disabled={loading} style={{ width: "100%", padding: "14px" }}>{loading ? "Creating account..." : "🚀 Create Account"}</Btn>
+            <div style={{ textAlign: "center", marginTop: 12 }}><Btn variant="ghost" onClick={() => setStep("creds")} style={{ fontSize: 13 }}>← Back</Btn></div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -347,7 +364,7 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
 
 // ─── HOME ─────────────────────────────────────────────────────────────────────
 
-function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, onSwitchGroup }) {
+function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout }) {
   return (
     <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
@@ -360,7 +377,10 @@ function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, on
             {group.members.length} members · code: <span style={{ color: COLORS.accentLight, fontWeight: 600 }}>{group.code}</span>
           </div>
         </div>
-        <Avatar user={user} size={38} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Avatar user={user} size={38} />
+          <button onClick={onLogout} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", fontFamily: FONTS.body }}>Logout</button>
+        </div>
       </div>
 
       <div style={{ background: `linear-gradient(135deg, ${COLORS.accentDim} 0%, #1A0A2E 100%)`, borderRadius: 20, padding: "20px", marginBottom: 24, border: `1px solid ${COLORS.accent}33` }}>
@@ -776,7 +796,7 @@ function NavBar({ tab, setTab }) {
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [showWelcome, setShowWelcome] = useState(!getSeenWelcome());
+  const [showWelcome, setShowWelcome] = useState(true);
   const [currentUser, setCurrentUser] = useState(getLocalUser);
   const [currentGroup, setCurrentGroup] = useState(getLocalGroup);
   const [screen, setScreen] = useState("home");
@@ -833,7 +853,7 @@ export default function App() {
     setScreen("home");
   };
 
-  if (showWelcome) return <WelcomeScreen onGetStarted={() => { setSeenWelcome(); setShowWelcome(false); }} />;
+  if (showWelcome && !currentUser) return <WelcomeScreen onGetStarted={() => setShowWelcome(false)} />;
   if (!currentUser) return <LoginScreen onLogin={u => { setCurrentUser(u); saveLocalUser(u); }} />;
   if (!currentGroup) return (
     <GroupSelectScreen
@@ -845,6 +865,8 @@ export default function App() {
   );
 
   const handleSwitchGroup = () => { setCurrentGroup(null); setGroupData(null); saveLocalGroup(null); setScreen("home"); setTab("home"); };
+
+  const handleLogout = () => { setCurrentUser(null); setCurrentGroup(null); setGroupData(null); saveLocalUser(null); saveLocalGroup(null); setScreen("home"); setTab("home"); setShowWelcome(false); };
 
   const renderScreen = () => {
     if (tab === "rankings") return <RankingsScreen user={currentUser} users={users} events={events} />;
@@ -858,7 +880,7 @@ export default function App() {
       case "billsplit":
         return selectedEvent ? <BillSplitScreen event={selectedEvent} users={users} onDone={handleDone} /> : null;
       default:
-        return <HomeScreen user={currentUser} users={users} events={events} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} />;
+        return <HomeScreen user={currentUser} users={users} events={events} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} />;
     }
   };
 

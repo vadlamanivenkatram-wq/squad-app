@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { db } from "./firebase";
 import {
   doc, setDoc, onSnapshot, updateDoc,
@@ -23,6 +23,8 @@ const getLocalUser = () => { try { const s = localStorage.getItem("squad_user");
 const saveLocalUser = (u) => { try { localStorage.setItem("squad_user", JSON.stringify(u)); } catch {} };
 const getLocalGroup = () => { try { const s = localStorage.getItem("squad_group"); return s ? JSON.parse(s) : null; } catch { return null; } };
 const saveLocalGroup = (g) => { try { localStorage.setItem("squad_group", JSON.stringify(g)); } catch {} };
+const getSeenWelcome = () => { try { return localStorage.getItem("squad_welcome") === "1"; } catch { return false; } };
+const setSeenWelcome = () => { try { localStorage.setItem("squad_welcome", "1"); } catch {} };
 
 const Avatar = ({ user, size = 36 }) => (
   <div style={{
@@ -51,6 +53,56 @@ const Btn = ({ children, onClick, variant = "primary", style = {}, disabled }) =
   };
   return <button onClick={onClick} disabled={disabled} style={{ ...base, ...variants[variant] }}>{children}</button>;
 };
+
+// ─── WELCOME SCREEN ──────────────────────────────────────────────────────────
+
+function WelcomeScreen({ onGetStarted }) {
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: FONTS.body, padding: "0 28px", position: "relative", overflow: "hidden" }}>
+      {/* Background glow */}
+      <div style={{ position: "absolute", top: "20%", left: "50%", transform: "translateX(-50%)", width: 300, height: 300, borderRadius: "50%", background: COLORS.accent + "15", filter: "blur(80px)", pointerEvents: "none" }} />
+
+      <div style={{ position: "relative", textAlign: "center", maxWidth: 360 }}>
+        {/* Logo */}
+        <div style={{ fontSize: 64, marginBottom: 8 }}>🎉</div>
+        <div style={{ fontSize: 52, fontFamily: FONTS.display, fontWeight: 800, color: COLORS.text, letterSpacing: -3, lineHeight: 1, marginBottom: 8 }}>
+          squad<span style={{ color: COLORS.accent }}>.</span>
+        </div>
+
+        {/* Slogan */}
+        <div style={{ fontSize: 18, color: COLORS.accentLight, fontWeight: 600, marginBottom: 12 }}>
+          your crew, one tap away
+        </div>
+        <div style={{ fontSize: 14, color: COLORS.muted, lineHeight: 1.6, marginBottom: 48 }}>
+          Plan events, track who's coming, split bills, and see your crew's live location — all in one place for you and your friends.
+        </div>
+
+        {/* Features */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 48, textAlign: "left" }}>
+          {[
+            { icon: "📅", title: "Plan anything", desc: "From small hangouts to big nights out" },
+            { icon: "📍", title: "Live location", desc: "See where your crew is in real time" },
+            { icon: "💰", title: "Split bills", desc: "No more awkward money conversations" },
+            { icon: "🏆", title: "Rankings", desc: "Who shows up the most? Find out." },
+          ].map(f => (
+            <div key={f.title} style={{ display: "flex", alignItems: "center", gap: 14, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 16px" }}>
+              <span style={{ fontSize: 24 }}>{f.icon}</span>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{f.title}</div>
+                <div style={{ fontSize: 12, color: COLORS.muted }}>{f.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <Btn onClick={onGetStarted} style={{ width: "100%", padding: "16px", fontSize: 17 }}>
+          Get Started →
+        </Btn>
+        <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 16 }}>Free forever · No ads · Just your crew</div>
+      </div>
+    </div>
+  );
+}
 
 // ─── LOGIN / SETUP ───────────────────────────────────────────────────────────
 
@@ -504,6 +556,9 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
 function LiveLocationScreen({ event, user, users, onBack }) {
   const [myLoc, setMyLoc] = useState(null);
   const [locs, setLocs] = useState(event.liveLocations || {});
+  const mapRef = React.useRef(null);
+  const mapInstanceRef = React.useRef(null);
+  const markersRef = React.useRef({});
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, "events", event.id), snap => {
@@ -523,24 +578,54 @@ function LiveLocationScreen({ event, user, users, onBack }) {
     return () => navigator.geolocation.clearWatch(watch);
   }, [event.id, user.id]);
 
-  const ETAColor = (eta) => eta === "arrived" ? COLORS.green : COLORS.amber;
+  // Build OpenStreetMap URL with all markers
+  const locEntries = Object.entries(locs);
+  const hasLocs = locEntries.length > 0;
+  const centerLat = hasLocs ? locEntries.reduce((s,[,l]) => s + l.lat, 0) / locEntries.length : 20.5937;
+  const centerLng = hasLocs ? locEntries.reduce((s,[,l]) => s + l.lng, 0) / locEntries.length : 78.9629;
+
+  // Build iframe src for OpenStreetMap with markers
+  const markerParams = locEntries.map(([uid, loc]) => {
+    const u = users.find(x => x.id === uid);
+    return `marker=${loc.lat},${loc.lng}`;
+  }).join("&");
+
+  const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${centerLng-0.02},${centerLat-0.02},${centerLng+0.02},${centerLat+0.02}&layer=mapnik&${markerParams}`;
 
   return (
-    <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: COLORS.bg }}>
+      <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
         <Btn variant="ghost" onClick={onBack} style={{ padding: "8px 14px", fontSize: 13 }}>←</Btn>
         <div style={{ fontSize: 18, fontFamily: FONTS.display, fontWeight: 700, color: COLORS.text }}>Live Locations</div>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.green, boxShadow: `0 0 6px ${COLORS.green}` }} />
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.green, boxShadow: `0 0 6px ${COLORS.green}`, animation: "pulse 1.5s infinite" }} />
           <span style={{ fontSize: 12, color: COLORS.green }}>Live</span>
         </div>
       </div>
 
-      {myLoc && <div style={{ background: COLORS.greenDim, border: `1px solid ${COLORS.green}44`, borderRadius: 14, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: COLORS.green }}>📍 Your location is being shared with the group</div>}
-      {!myLoc && <div style={{ background: COLORS.amberDim, border: `1px solid ${COLORS.amber}44`, borderRadius: 14, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: COLORS.amber }}>📍 Allow location access to share your position</div>}
+      {/* MAP */}
+      <div style={{ margin: "0 16px", borderRadius: 16, overflow: "hidden", border: `1px solid ${COLORS.border}`, flex: "0 0 300px" }}>
+        {hasLocs ? (
+          <iframe
+            src={mapSrc}
+            width="100%" height="300"
+            style={{ border: "none", display: "block" }}
+            title="Live locations map"
+          />
+        ) : (
+          <div style={{ height: 300, background: COLORS.subtle, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 32 }}>🗺️</div>
+            <div style={{ fontSize: 13, color: COLORS.muted }}>Waiting for location data...</div>
+          </div>
+        )}
+      </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {Object.entries(locs).map(([uid, loc]) => {
+      {myLoc && <div style={{ margin: "12px 16px 0", background: COLORS.greenDim, border: `1px solid ${COLORS.green}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: COLORS.green }}>📍 Your location is being shared live</div>}
+      {!myLoc && <div style={{ margin: "12px 16px 0", background: COLORS.amberDim, border: `1px solid ${COLORS.amber}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: COLORS.amber }}>📍 Allow location access to appear on the map</div>}
+
+      {/* PEOPLE LIST */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+        {locEntries.map(([uid, loc]) => {
           const u = users.find(x => x.id === uid);
           if (!u) return null;
           const isMe = uid === user.id;
@@ -550,14 +635,15 @@ function LiveLocationScreen({ event, user, users, onBack }) {
               <Avatar user={u} size={36} />
               <div style={{ marginLeft: 12, flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{u.name} {isMe && <span style={{ fontSize: 11, color: COLORS.muted }}>(you)</span>}</div>
-                <div style={{ fontSize: 12, color: COLORS.muted }}>{timeAgo !== null ? `Updated ${timeAgo}s ago` : "Location shared"}</div>
+                <div style={{ fontSize: 12, color: COLORS.muted }}>{timeAgo !== null ? `Updated ${timeAgo}s ago` : "Sharing location"}</div>
               </div>
               <div style={{ fontSize: 11, color: COLORS.green, background: COLORS.greenDim, padding: "4px 10px", borderRadius: 10 }}>📍 Live</div>
             </div>
           );
         })}
-        {Object.keys(locs).length === 0 && <div style={{ textAlign: "center", color: COLORS.muted, padding: "40px 0", fontSize: 14 }}>Waiting for crew members to share their location...</div>}
+        {locEntries.length === 0 && <div style={{ textAlign: "center", color: COLORS.muted, padding: "20px 0", fontSize: 14 }}>No one sharing location yet</div>}
       </div>
+      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
     </div>
   );
 }
@@ -690,6 +776,7 @@ function NavBar({ tab, setTab }) {
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const [showWelcome, setShowWelcome] = useState(!getSeenWelcome());
   const [currentUser, setCurrentUser] = useState(getLocalUser);
   const [currentGroup, setCurrentGroup] = useState(getLocalGroup);
   const [screen, setScreen] = useState("home");
@@ -746,6 +833,7 @@ export default function App() {
     setScreen("home");
   };
 
+  if (showWelcome) return <WelcomeScreen onGetStarted={() => { setSeenWelcome(); setShowWelcome(false); }} />;
   if (!currentUser) return <LoginScreen onLogin={u => { setCurrentUser(u); saveLocalUser(u); }} />;
   if (!currentGroup) return (
     <GroupSelectScreen

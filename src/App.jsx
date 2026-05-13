@@ -398,7 +398,7 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
                     if (val && i < 3) document.getElementById(`join-${i+1}`)?.focus();
                   }}
                   onKeyDown={e => { if (e.key === "Backspace" && !joinCode[i] && i > 0) document.getElementById(`join-${i-1}`)?.focus(); }}
-                  style={{ flex: 1, height: 64, textAlign: "center", fontSize: 32, fontWeight: 800, fontFamily: FONTS.display, background: COLORS.card, border: `1px solid ${joinError ? COLORS.red : joinCode[i] ? COLORS.accent : COLORS.border}`, borderRadius: 14, color: COLORS.text, outline: "none", MozAppearance: "textfield" }} />
+                  style={{ flex: 1, height: 44, textAlign: "center", fontSize: 20, fontWeight: 800, fontFamily: FONTS.display
               ))}
             </div>
             {joinError && <div style={{ fontSize: 13, color: COLORS.red, marginBottom: 4 }}>{joinError}</div>}

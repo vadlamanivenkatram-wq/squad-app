@@ -387,7 +387,7 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
             </div>
             <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>ENTER THE 4-DIGIT CODE</label>
             <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 4, marginBottom: 12 }}>Ask the person who created the group</div>
-            <div style={{ display: "flex", gap: 10, marginBottom: 6 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
               {[0,1,2,3].map(i => (
                 <input key={i} id={`join-${i}`} type="number" inputMode="numeric" maxLength={1} value={joinCode[i] || ""}
                   onChange={e => {
@@ -398,7 +398,7 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
                     if (val && i < 3) document.getElementById(`join-${i+1}`)?.focus();
                   }}
                   onKeyDown={e => { if (e.key === "Backspace" && !joinCode[i] && i > 0) document.getElementById(`join-${i-1}`)?.focus(); }}
-                  style={{ flex: 1, height: 44, textAlign: "center", fontSize: 20, fontWeight: 800, fontFamily: FONTS.display, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, color: COLORS.text }}
+                  style={{ width: 48, height: 48, textAlign: "center", fontSize: 20, fontWeight: 800, fontFamily: FONTS.display, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 8, color: COLORS.text }}
                 />
               ))}
             </div>
@@ -847,7 +847,7 @@ function NavBar({ tab, setTab }) {
 
 export default function App() {
   const [showWelcome, setShowWelcome] = useState(true);
-  const [currentUser, setCurrentUser] = useState(getLocalUser);
+  const [currentUser, setCurrentUser] = useState(null);
   const [currentGroup, setCurrentGroup] = useState(getLocalGroup);
   const [screen, setScreen] = useState("home");
   const [tab, setTab] = useState("home");
@@ -861,6 +861,36 @@ export default function App() {
     link.rel = "stylesheet";
     link.href = "https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap";
     document.head.appendChild(link);
+  }, []);
+
+  useEffect(() => {
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        const gUser = session.user;
+        const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
+        if (!snap.empty) {
+          const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
+          setCurrentUser(u);
+        }
+      }
+    };
+    checkAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session?.user) {
+        const gUser = session.user;
+        const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
+        if (!snap.empty) {
+          const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
+          setCurrentUser(u);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {

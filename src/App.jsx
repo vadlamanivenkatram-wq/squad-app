@@ -120,13 +120,12 @@ function LoginScreen({ onLogin }) {
   const inputStyle = { width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "14px 16px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, boxSizing: "border-box", outline: "none", marginBottom: 12 };
 
   const handleGoogleLogin = async () => {
-    const { supabase } = await import("./supabase");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin }
-    });
-    if (error) setError(error.message);
-  };
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: "https://thecircle-seven.vercel.app" }
+  });
+  if (error) setError(error.message);
+};
 
   useEffect(() => {
     const checkGoogleAuth = async () => {

@@ -129,8 +129,7 @@ function LoginScreen({ onLogin }) {
 
   useEffect(() => {
     const checkGoogleAuth = async () => {
-      const { supabase } = await import("./supabase");
-      const { data: { session } } = await supabase.auth.getSession();
+  const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         const gUser = session.user;
         const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
@@ -146,6 +145,14 @@ function LoginScreen({ onLogin }) {
       }
     };
     checkGoogleAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        checkGoogleAuth();
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleLogin = async () => {

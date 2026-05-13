@@ -3,7 +3,7 @@ import { supabase } from "./supabase";
 import { db } from "./firebase";
 import {
   doc, setDoc, onSnapshot, updateDoc,
-  collection, addDoc, query, where, getDocs
+  collection, addDoc, query, where, getDocs, orderBy
 } from "firebase/firestore";
 
 const COLORS = {
@@ -414,9 +414,12 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
 
 // ─── HOME ─────────────────────────────────────────────────────────────────────
 
-function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout }) {
+function HomeScreen({ user, users, events, messages, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout, onSendMessage }) {
+  const [showPendingInvite, setShowPendingInvite] = useState(true);
+  const [chatText, setChatText] = useState("");
+  const pendingEvent = events.find(ev => ev.hostId !== user.id && ev.rsvps && ev.rsvps[user.id] === null);
   return (
-    <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto" }}>
+    <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto", position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -440,6 +443,23 @@ function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, on
         <div style={{ fontSize: 16, color: COLORS.text, fontWeight: 600, marginBottom: 12 }}>Plan something for the crew</div>
         <Btn onClick={onCreateEvent} style={{ width: "100%" }}>+ Create Tonight's Event</Btn>
       </div>
+
+      {pendingEvent && showPendingInvite && (
+        <div style={{ position: "fixed", left: 16, right: 16, bottom: 16, zIndex: 200, background: COLORS.card, border: `1px solid ${COLORS.accent}55`, borderRadius: 20, padding: "20px", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text }}>New event invite</div>
+              <button onClick={() => setShowPendingInvite(false)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 14, cursor: "pointer", padding: 0 }}>Remind me later</button>
+            </div>
+            <div style={{ fontSize: 14, color: COLORS.muted }}>{pendingEvent.title} • {pendingEvent.time} at {pendingEvent.location}</div>
+            <div style={{ fontSize: 13, color: COLORS.muted, lineHeight: 1.5 }}>{pendingEvent.description || "Can you join this event?"}</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Btn variant="success" onClick={() => { onRsvp(pendingEvent.id, "yes"); setShowPendingInvite(false); }} style={{ flex: 1, minWidth: 120 }}>YES, I can go</Btn>
+              <Btn variant="danger" onClick={() => { onRsvp(pendingEvent.id, "no"); setShowPendingInvite(false); }} style={{ flex: 1, minWidth: 120 }}>NO, can't make it</Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       {events.length === 0 && <div style={{ textAlign: "center", padding: "40px 0", color: COLORS.muted, fontSize: 14 }}>No events yet — be the first to create one!</div>}
 
@@ -477,6 +497,41 @@ function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, on
           </div>
         );
       })}
+
+      <div style={{ marginTop: 20, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: "18px" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.text }}>Group chat</div>
+          <div style={{ fontSize: 12, color: COLORS.muted }}>{messages.length} messages</div>
+        </div>
+        <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, paddingRight: 4, marginBottom: 14 }}>
+          {messages.length === 0 ? (
+            <div style={{ color: COLORS.muted, fontSize: 13 }}>No messages yet — start the conversation.</div>
+          ) : messages.map(msg => {
+            const time = new Date(msg.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const isMine = msg.userId === user.id;
+            const initials = msg.userName ? msg.userName.split(" ").map(part => part[0]).slice(0,2).join("").toUpperCase() : "?";
+            return (
+              <div key={msg.id} style={{ display: "flex", flexDirection: isMine ? "row-reverse" : "row", alignItems: "flex-end", gap: 10, justifyContent: isMine ? "flex-end" : "flex-start" }}>
+                <div style={{ width: 32, height: 32, borderRadius: "50%", background: msg.color ? `${msg.color}33` : COLORS.subtle, border: `1px solid ${msg.color || COLORS.border}`, color: msg.color || COLORS.text, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, fontFamily: FONTS.body }}>{initials}</div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: isMine ? "flex-end" : "flex-start", maxWidth: "80%" }}>
+                  <div style={{ background: isMine ? COLORS.accentDim : COLORS.subtle, border: `1px solid ${isMine ? COLORS.accent : COLORS.border}`, borderRadius: 16, padding: "10px 14px", color: COLORS.text, fontSize: 14, lineHeight: 1.5 }}>
+                    {msg.text}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <span style={{ fontSize: 11, color: COLORS.muted }}>{msg.userName}</span>
+                    <span style={{ fontSize: 11, color: COLORS.muted }}>{time}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <input value={chatText} onChange={e => setChatText(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && chatText.trim()) { onSendMessage(chatText); setChatText(""); } }} placeholder="Type a message..."
+            style={{ flex: 1, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px", background: COLORS.bg, color: COLORS.text, fontSize: 14, fontFamily: FONTS.body, outline: "none" }} />
+          <Btn onClick={() => { onSendMessage(chatText); setChatText(""); }} disabled={!chatText.trim()} style={{ padding: "12px 18px" }}>Send</Btn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -584,8 +639,8 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
         <div style={{ background: COLORS.card, border: `1px solid ${COLORS.amber}44`, borderRadius: 18, padding: "18px", marginBottom: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: COLORS.text, marginBottom: 14 }}>You in tonight? 🎉</div>
           <div style={{ display: "flex", gap: 10 }}>
-            <Btn variant="success" onClick={() => onRsvp("yes")} style={{ flex: 1 }}>✓ I'm in!</Btn>
-            <Btn variant="danger" onClick={() => onRsvp("no")} style={{ flex: 1 }}>✗ Can't make it</Btn>
+            <Btn variant="success" onClick={() => onRsvp(event.id, "yes")} style={{ flex: 1 }}>✓ I'm in!</Btn>
+            <Btn variant="danger" onClick={() => onRsvp(event.id, "no")} style={{ flex: 1 }}>✗ Can't make it</Btn>
           </div>
         </div>
       )}
@@ -855,6 +910,7 @@ export default function App() {
   const [tab, setTab] = useState("home");
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [events, setEvents] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [users, setUsers] = useState([]);
   const [groupData, setGroupData] = useState(currentGroup);
 
@@ -913,6 +969,19 @@ export default function App() {
   }, [currentGroup?.id]);
 
   useEffect(() => {
+    if (!currentGroup) return;
+    const msgQuery = query(
+      collection(db, "messages"),
+      where("groupId", "==", currentGroup.id),
+      orderBy("createdAt", "asc")
+    );
+    const unsub = onSnapshot(msgQuery, snap => {
+      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [currentGroup?.id]);
+
+  useEffect(() => {
     if (!groupData?.members?.length) return;
     const unsub = onSnapshot(collection(db, "users"), snap => {
       const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -921,10 +990,23 @@ export default function App() {
     return unsub;
   }, [groupData?.members]);
 
-  const handleRsvp = async (val) => {
-    if (!selectedEvent) return;
-    await updateDoc(doc(db, "events", selectedEvent.id), { [`rsvps.${currentUser.id}`]: val });
-    setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: val } }));
+  const sendMessage = async (text) => {
+    if (!currentGroup || !text?.trim()) return;
+    await addDoc(collection(db, "messages"), {
+      groupId: currentGroup.id,
+      text: text.trim(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      color: currentUser.color,
+      createdAt: Date.now(),
+    });
+  };
+
+  const handleRsvp = async (eventId, val) => {
+    await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: val });
+    if (selectedEvent?.id === eventId) {
+      setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: val } }));
+    }
   };
 
   const handleEndEvent = () => setScreen("billsplit");
@@ -962,7 +1044,7 @@ export default function App() {
       case "billsplit":
         return selectedEvent ? <BillSplitScreen event={selectedEvent} users={users} onDone={handleDone} /> : null;
       default:
-        return <HomeScreen user={currentUser} users={users} events={events} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} />;
+        return <HomeScreen user={currentUser} users={users} events={events} messages={messages} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} onSendMessage={sendMessage} />;
     }
   };
 

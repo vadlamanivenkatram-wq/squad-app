@@ -915,7 +915,7 @@ export default function App() {
 
   const handleSwitchGroup = () => { setCurrentGroup(null); setGroupData(null); saveLocalGroup(null); setScreen("home"); setTab("home"); };
 
-  const handleLogout = async () => { await supabase.auth.signOut(); setCurrentUser(null); setCurrentGroup(null); setGroupData(null); saveLocalUser(null); saveLocal...
+  const handleLogout = async () => { await supabase.auth.signOut(); setCurrentUser(null); setCurrentGroup(null); setGroupData(null); saveLocalUser(null); saveLocalGroup(null); };
 
   const renderScreen = () => {
     if (tab === "rankings") return <RankingsScreen user={currentUser} users={users} events={events} />;

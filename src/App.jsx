@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { db } from "./firebase";
+import { supabase } from "./supabase";
 import {
   doc, setDoc, onSnapshot, updateDoc,
   collection, addDoc, query, where, getDocs

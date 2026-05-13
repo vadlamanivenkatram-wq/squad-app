@@ -14,6 +14,18 @@ const COLORS = {
 };
 const FONTS = { display: "'Syne', sans-serif", body: "'DM Sans', sans-serif" };
 const PALETTE = ["#6C63FF","#EC4899","#22C55E","#F59E0B","#06B6D4","#EF4444","#F97316","#A855F7","#14B8A6","#84CC16"];
+const VAPID_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtnP-4Kfqxw3m6v4Hd1Z0LdOiS0skseSm6W8YP5bbv4W2OnHAgf_JevLIta_OQ1I5PiKyxHAtx4p9UfqbmZ8ziA";
+
+const urlBase64ToUint8Array = (base64String) => {
+  const padding = "=".repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+};
 
 const getInitials = (name) => {
   const parts = name.trim().split(/\s+/);
@@ -414,7 +426,7 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
 
 // ─── HOME ─────────────────────────────────────────────────────────────────────
 
-function HomeScreen({ user, users, events, messages, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout, onSendMessage }) {
+function HomeScreen({ user, users, events, messages, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout, onSendMessage, onRequestNotifications, notificationPermission, subscriptionStatus }) {
   const [showPendingInvite, setShowPendingInvite] = useState(true);
   const [chatText, setChatText] = useState("");
   const pendingEvent = events.find(ev => ev.hostId !== user.id && ev.rsvps && ev.rsvps[user.id] === null);
@@ -442,6 +454,20 @@ function HomeScreen({ user, users, events, messages, group, onCreateEvent, onVie
         <div style={{ fontSize: 12, color: COLORS.accentLight, letterSpacing: 1, fontWeight: 600, marginBottom: 6 }}>HOST AN EVENT</div>
         <div style={{ fontSize: 16, color: COLORS.text, fontWeight: 600, marginBottom: 12 }}>Plan something for the crew</div>
         <Btn onClick={onCreateEvent} style={{ width: "100%" }}>+ Create Tonight's Event</Btn>
+      </div>
+
+      <div style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 20, padding: "20px", marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <div style={{ fontSize: 12, color: COLORS.accentLight, letterSpacing: 1, fontWeight: 600 }}>NOTIFICATIONS</div>
+          <span style={{ fontSize: 12, color: notificationPermission === "granted" ? COLORS.green : notificationPermission === "denied" ? COLORS.red : COLORS.muted }}>
+            {notificationPermission === "unsupported" ? "Unsupported" : notificationPermission === "granted" ? (subscriptionStatus === "subscribed" ? "Subscribed" : "Ready to subscribe") : notificationPermission === "denied" ? "Blocked" : "Not requested"}
+          </span>
+        </div>
+        <div style={{ fontSize: 15, color: COLORS.text, fontWeight: 600, marginBottom: 10 }}>Stay informed about event invites and RSVP updates.</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <Btn onClick={onRequestNotifications} variant="secondary" style={{ flex: 1, minWidth: 160 }}>Enable notifications</Btn>
+          {notificationPermission === "denied" && <div style={{ fontSize: 12, color: COLORS.muted }}>Notifications are blocked in your browser. Change site permissions to re-enable.</div>}
+        </div>
       </div>
 
       {pendingEvent && showPendingInvite && (
@@ -913,6 +939,129 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [users, setUsers] = useState([]);
   const [groupData, setGroupData] = useState(currentGroup);
+  const [notificationPermission, setNotificationPermission] = useState("default");
+  const [subscriptionStatus, setSubscriptionStatus] = useState("unknown");
+
+  const savePushSubscription = async (subscription) => {
+    if (!currentUser) return;
+    try {
+      await supabase.from("push_subscriptions").upsert(
+        {
+          user_id: currentUser.id,
+          email: currentUser.email || null,
+          name: currentUser.name,
+          group_id: currentGroup?.id || null,
+          subscription,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+    } catch (error) {
+      console.warn("Failed to save push subscription", error);
+    }
+  };
+
+  const updateNotificationStatus = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setSubscriptionStatus("unsupported");
+      return;
+    }
+
+    const permission = Notification.permission;
+    let subscribed = false;
+
+    if (permission === "granted" && "serviceWorker" in navigator && "PushManager" in window) {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration) {
+        const subscription = await registration.pushManager.getSubscription();
+        subscribed = Boolean(subscription);
+      }
+    }
+
+    setNotificationPermission(permission);
+    setSubscriptionStatus(subscribed ? "subscribed" : "not_subscribed");
+  };
+
+  const registerServiceWorkerSubscription = async () => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    try {
+      const registration = await navigator.serviceWorker.register("/service-worker.js");
+      let subscription = await registration.pushManager.getSubscription();
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+      await savePushSubscription(subscription.toJSON());
+      await updateNotificationStatus();
+    } catch (error) {
+      console.warn("Push registration failed", error);
+    }
+  };
+
+  const requestNotificationPermission = async () => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "granted") {
+      await registerServiceWorkerSubscription();
+      await updateNotificationStatus();
+      return;
+    }
+    if (Notification.permission === "default") {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        await registerServiceWorkerSubscription();
+      }
+      await updateNotificationStatus();
+    }
+  };
+
+  const sendPushNotification = async (payload) => {
+    try {
+      await supabase.functions.invoke("send_push_notification", { body: JSON.stringify(payload) });
+    } catch (error) {
+      console.warn("Push notification dispatch failed", error);
+    }
+  };
+
+  const notifyNewEvent = async (event) => {
+    await sendPushNotification({
+      type: "new_event",
+      groupId: event.groupId,
+      title: "New Squad event",
+      body: `${currentUser?.name || "Someone"} created ${event.title}`,
+      eventId: event.id,
+      url: "/",
+    });
+  };
+
+  const notifyRsvpUpdate = async (event, response) => {
+    if (!event || event.hostId === currentUser?.id) return;
+    await sendPushNotification({
+      type: "rsvp_update",
+      groupId: event.groupId,
+      recipientId: event.hostId,
+      title: "RSVP update",
+      body: `${currentUser?.name || "Someone"} ${response === "yes" ? "is going" : "can't make it"} to ${event.title}`,
+      eventId: event.id,
+      url: "/",
+    });
+  };
+
+  const handleEventCreated = async (event) => {
+    setScreen("home");
+    notifyNewEvent(event);
+  };
+
+  const handleRsvp = async (eventId, val) => {
+    await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: val });
+    const event = events.find(e => e.id === eventId) || selectedEvent;
+    if (selectedEvent?.id === eventId) {
+      setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: val } }));
+    }
+    await notifyRsvpUpdate(event, val);
+  };
 
   useEffect(() => {
     const link = document.createElement("link");
@@ -930,6 +1079,7 @@ export default function App() {
         if (!snap.empty) {
           const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
           setCurrentUser(u);
+          requestNotificationPermission();
         }
       }
     };
@@ -942,6 +1092,7 @@ export default function App() {
         if (!snap.empty) {
           const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
           setCurrentUser(u);
+          requestNotificationPermission();
         }
       } else {
         setCurrentUser(null);
@@ -950,6 +1101,12 @@ export default function App() {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      updateNotificationStatus();
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (!currentGroup) return;
@@ -1002,13 +1159,6 @@ export default function App() {
     });
   };
 
-  const handleRsvp = async (eventId, val) => {
-    await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: val });
-    if (selectedEvent?.id === eventId) {
-      setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: val } }));
-    }
-  };
-
   const handleEndEvent = () => setScreen("billsplit");
 
   const handleDone = async () => {
@@ -1018,7 +1168,7 @@ export default function App() {
   };
 
   if (showWelcome && !currentUser) return <WelcomeScreen onGetStarted={() => setShowWelcome(false)} />;
-  if (!currentUser) return <LoginScreen onLogin={u => { setCurrentUser(u); saveLocalUser(u); }} />;
+  if (!currentUser) return <LoginScreen onLogin={u => { setCurrentUser(u); saveLocalUser(u); requestNotificationPermission(); }} />;
   if (!currentGroup) return (
     <GroupSelectScreen
       user={currentUser}
@@ -1044,7 +1194,7 @@ export default function App() {
       case "billsplit":
         return selectedEvent ? <BillSplitScreen event={selectedEvent} users={users} onDone={handleDone} /> : null;
       default:
-        return <HomeScreen user={currentUser} users={users} events={events} messages={messages} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} onSendMessage={sendMessage} />;
+        return <HomeScreen user={currentUser} users={users} events={events} messages={messages} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} onSendMessage={sendMessage} onRsvp={handleRsvp} onRequestNotifications={requestNotificationPermission} notificationPermission={notificationPermission} subscriptionStatus={subscriptionStatus} />;
     }
   };
 

@@ -429,7 +429,9 @@ function HomeScreen({ user, users, events, group, onCreateEvent, onViewEvent, on
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Avatar user={user} size={38} />
-          <button onClick={onLogout} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", fontFamily: FONTS.body }}>Logout</button>
+          <button onClick={onLogout} style={{ background: COLORS.subtle, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "6px 12px", color: COLORS.red, fontSize: 14, cursor: "pointer", fontFamily: FONTS.body, fontWeight: 500, transition: "all 0.15s" }}
+            onMouseEnter={e => { e.currentTarget.style.background = COLORS.redDim; e.currentTarget.style.borderColor = COLORS.red; }}
+            onMouseLeave={e => { e.currentTarget.style.background = COLORS.subtle; e.currentTarget.style.borderColor = COLORS.border; }}>Logout</button>
         </div>
       </div>
 

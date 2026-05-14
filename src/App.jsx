@@ -1126,12 +1126,9 @@ export default function App() {
   }, [currentGroup?.id]);
 
   useEffect(() => {
-    if (!currentGroup) return;
-    const msgQuery = query(
-      collection(db, "messages"),
-      where("groupId", "==", currentGroup.id),
-      orderBy("createdAt", "asc")
-    );
+    if (!currentGroup?.id) return;
+    const messagesCollection = collection(db, "groups", currentGroup.id, "messages");
+    const msgQuery = query(messagesCollection, orderBy("createdAt", "asc"));
     const unsub = onSnapshot(msgQuery, snap => {
       setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
@@ -1148,8 +1145,8 @@ export default function App() {
   }, [groupData?.members]);
 
   const sendMessage = async (text) => {
-    if (!currentGroup || !text?.trim()) return;
-    await addDoc(collection(db, "messages"), {
+    if (!currentGroup?.id || !text?.trim()) return;
+    await addDoc(collection(db, "groups", currentGroup.id, "messages"), {
       groupId: currentGroup.id,
       text: text.trim(),
       userId: currentUser.id,

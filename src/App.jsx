@@ -3,7 +3,7 @@ import { supabase } from "./supabase";
 import { db } from "./firebase";
 import {
   doc, setDoc, onSnapshot, updateDoc,
-  collection, addDoc, query, where, getDocs, orderBy
+  collection, addDoc, query, where, getDocs, orderBy, arrayUnion
 } from "firebase/firestore";
 
 const COLORS = {
@@ -150,7 +150,7 @@ function LoginScreen({ onLogin }) {
           const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
           saveLocalUser(u); onLogin(u);
         } else {
-          const newUser = { name: gUser.user_metadata?.full_name || gUser.email.split("@")[0], email: gUser.email, avatar: getInitials(gUser.user_metadata?.full_name || gUser.email), color: PALETTE[Math.floor(Math.random() * PALETTE.length)], attended: 0, total: 0, streak: 0 };
+          const newUser = { name: gUser.user_metadata?.full_name || gUser.email.split("@")[0], email: gUser.email, avatar: getInitials(gUser.user_metadata?.full_name || gUser.email), color: PALETTE[Math.floor(Math.random() * PALETTE.length)], attended: 0, total: 0, streak: 0, joinedGroups: [] };
           const ref = await addDoc(collection(db, "users"), newUser);
           const u = { id: ref.id, ...newUser };
           saveLocalUser(u); onLogin(u);
@@ -188,7 +188,7 @@ function LoginScreen({ onLogin }) {
       setLoading(false); setStep("color"); return;
     }
     setLoading(true);
-    const newUser = { name: name.trim(), username: username.trim().toLowerCase(), password, avatar: getInitials(name), color, attended: 0, total: 0, streak: 0 };
+    const newUser = { name: name.trim(), username: username.trim().toLowerCase(), password, avatar: getInitials(name), color, attended: 0, total: 0, streak: 0, joinedGroups: [] };
     const ref = await addDoc(collection(db, "users"), newUser);
     const u = { id: ref.id, ...newUser };
     saveLocalUser(u); onLogin(u);
@@ -310,8 +310,10 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
     const newGroup = { name: groupName.trim(), code: generatedCode, members: [user.id], createdBy: user.id, createdAt: Date.now() };
     const ref = await addDoc(collection(db, "groups"), newGroup);
     const g = { id: ref.id, ...newGroup };
+    await updateDoc(doc(db, "users", user.id), { joinedGroups: arrayUnion(g.id) });
     saveLocalGroup(g);
     onCreateGroup(g);
+    setLoading(false);
   };
 
   const handleJoin = async () => {
@@ -322,9 +324,11 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
     if (found.members && found.members.length >= 15) { setJoinError("This group is full (15 max)."); return; }
     setLoading(true);
     await updateDoc(doc(db, "groups", found.id), { members: [...(found.members || []), user.id] });
+    await updateDoc(doc(db, "users", user.id), { joinedGroups: arrayUnion(found.id) });
     const updated = { ...found, members: [...(found.members || []), user.id] };
     saveLocalGroup(updated);
     onJoinGroup(updated);
+    setLoading(false);
   };
 
   return (
@@ -426,19 +430,23 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
 
 // ─── HOME ─────────────────────────────────────────────────────────────────────
 
-function HomeScreen({ user, users, events, messages, group, onCreateEvent, onViewEvent, onSwitchGroup, onLogout, onSendMessage, onRequestNotifications, notificationPermission, subscriptionStatus }) {
+function HomeScreen({ user, users, events, messages, group, joinedGroups, onCreateEvent, onViewEvent, onSelectGroup, onOpenGroupPicker, onRsvp, onLogout, onSendMessage, onRequestNotifications, notificationPermission, subscriptionStatus }) {
   const [showPendingInvite, setShowPendingInvite] = useState(true);
   const [chatText, setChatText] = useState("");
   const pendingEvent = events.find(ev => ev.hostId !== user.id && ev.rsvps && ev.rsvps[user.id] === null);
   return (
     <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto", position: "relative" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28 }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ fontSize: 22, fontFamily: FONTS.display, fontWeight: 800, color: COLORS.text, letterSpacing: -1 }}>{group.name}</div>
-            <button onClick={onSwitchGroup} style={{ background: COLORS.subtle, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, color: COLORS.muted, cursor: "pointer", fontFamily: FONTS.body }}>switch</button>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 28, gap: 16, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 220, flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <select value={group.id} onChange={e => onSelectGroup(joinedGroups.find(g => g.id === e.target.value))} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px", color: COLORS.text, fontFamily: FONTS.body, fontSize: 14, minWidth: 180 }}>
+              {joinedGroups.map(g => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+            <Btn variant="secondary" onClick={onOpenGroupPicker} style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>Join with code</Btn>
           </div>
-          <div style={{ color: COLORS.muted, fontSize: 13, marginTop: 2 }}>
+          <div style={{ color: COLORS.muted, fontSize: 13, marginTop: 8 }}>
             {group.members.length} members · code: <span style={{ color: COLORS.accentLight, fontWeight: 600 }}>{group.code}</span>
           </div>
         </div>
@@ -673,13 +681,13 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
       {!isHost && myRsvp === "yes" && (
         <div style={{ background: COLORS.greenDim, border: `1px solid ${COLORS.green}44`, borderRadius: 14, padding: "14px 16px", marginBottom: 20 }}>
           <div style={{ color: COLORS.green, fontWeight: 600 }}>✓ You're going! See you there.</div>
-          <button onClick={() => onRsvp(null)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", padding: 0, marginTop: 6 }}>Change mind?</button>
+          <button onClick={() => onRsvp(event.id, null)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", padding: 0, marginTop: 6 }}>Change mind?</button>
         </div>
       )}
       {!isHost && myRsvp === "no" && (
         <div style={{ background: COLORS.redDim, border: `1px solid ${COLORS.red}44`, borderRadius: 14, padding: "14px 16px", marginBottom: 20 }}>
           <div style={{ color: COLORS.red, fontWeight: 600 }}>✗ You're not going</div>
-          <button onClick={() => onRsvp(null)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", padding: 0, marginTop: 6 }}>Change mind?</button>
+          <button onClick={() => onRsvp(event.id, null)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 12, cursor: "pointer", padding: 0, marginTop: 6 }}>Change mind?</button>
         </div>
       )}
 
@@ -932,6 +940,7 @@ export default function App() {
   const [showWelcome, setShowWelcome] = useState(true);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentGroup, setCurrentGroup] = useState(getLocalGroup);
+  const [joinedGroups, setJoinedGroups] = useState([]);
   const [screen, setScreen] = useState("home");
   const [tab, setTab] = useState("home");
   const [selectedEvent, setSelectedEvent] = useState(null);
@@ -959,6 +968,52 @@ export default function App() {
     } catch (error) {
       console.warn("Failed to save push subscription", error);
     }
+  };
+
+  const loadJoinedGroups = async (userId) => {
+    if (!userId) return [];
+    const snap = await getDocs(query(collection(db, "groups"), where("members", "array-contains", userId)));
+    const groups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    setJoinedGroups(groups);
+    return groups;
+  };
+
+  const addGroupToUser = async (groupId) => {
+    if (!currentUser?.id) return;
+    try {
+      await updateDoc(doc(db, "users", currentUser.id), {
+        joinedGroups: arrayUnion(groupId),
+      });
+      setCurrentUser(prev => ({ ...(prev || {}), joinedGroups: [...new Set([...(prev?.joinedGroups || []), groupId])] }));
+    } catch (error) {
+      console.warn("Failed to update user joined groups", error);
+    }
+  };
+
+  const selectGroup = (group) => {
+    setCurrentGroup(group);
+    setGroupData(group);
+    saveLocalGroup(group);
+  };
+
+  const openGroupPicker = () => {
+    setCurrentGroup(null);
+    setGroupData(null);
+    saveLocalGroup(null);
+    setScreen("home");
+    setTab("home");
+  };
+
+  const handleCreatedGroup = async (group) => {
+    selectGroup(group);
+    await addGroupToUser(group.id);
+    await loadJoinedGroups(currentUser?.id);
+  };
+
+  const handleJoinedGroup = async (group) => {
+    selectGroup(group);
+    await addGroupToUser(group.id);
+    await loadJoinedGroups(currentUser?.id);
   };
 
   const updateNotificationStatus = async () => {
@@ -1055,12 +1110,20 @@ export default function App() {
   };
 
   const handleRsvp = async (eventId, val) => {
-    await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: val });
-    const event = events.find(e => e.id === eventId) || selectedEvent;
-    if (selectedEvent?.id === eventId) {
-      setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: val } }));
+    if (!eventId) return;
+    try {
+      const rsvpValue = val === null ? null : val;
+      await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: rsvpValue });
+      const event = events.find(e => e.id === eventId) || selectedEvent;
+      if (selectedEvent?.id === eventId) {
+        setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: rsvpValue } }));
+      }
+      if (rsvpValue !== null) {
+        await notifyRsvpUpdate(event, rsvpValue);
+      }
+    } catch (error) {
+      console.error("RSVP error:", error);
     }
-    await notifyRsvpUpdate(event, val);
   };
 
   useEffect(() => {
@@ -1103,9 +1166,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (currentUser) {
-      updateNotificationStatus();
-    }
+    const initializeUserGroups = async () => {
+      if (!currentUser) {
+        setJoinedGroups([]);
+        return;
+      }
+      const groups = await loadJoinedGroups(currentUser.id);
+      if ((!currentGroup?.id || !groups.find(g => g.id === currentGroup.id)) && groups.length > 0) {
+        selectGroup(groups[0]);
+      }
+      await updateNotificationStatus();
+    };
+    initializeUserGroups();
   }, [currentUser]);
 
   useEffect(() => {
@@ -1134,6 +1206,17 @@ export default function App() {
     });
     return unsub;
   }, [currentGroup?.id]);
+
+  useEffect(() => {
+    if (!selectedEvent?.id) return;
+    const unsub = onSnapshot(doc(db, "events", selectedEvent.id), snap => {
+      if (snap.exists()) {
+        const updatedEvent = { id: snap.id, ...snap.data() };
+        setSelectedEvent(updatedEvent);
+      }
+    });
+    return unsub;
+  }, [selectedEvent?.id]);
 
   useEffect(() => {
     if (!groupData?.members?.length) return;
@@ -1169,15 +1252,15 @@ export default function App() {
   if (!currentGroup) return (
     <GroupSelectScreen
       user={currentUser}
-      onSelectGroup={g => { setCurrentGroup(g); setGroupData(g); saveLocalGroup(g); }}
-      onCreateGroup={g => { setCurrentGroup(g); setGroupData(g); saveLocalGroup(g); }}
-      onJoinGroup={g => { setCurrentGroup(g); setGroupData(g); saveLocalGroup(g); }}
+      onSelectGroup={g => selectGroup(g)}
+      onCreateGroup={g => handleCreatedGroup(g)}
+      onJoinGroup={g => handleJoinedGroup(g)}
     />
   );
 
-  const handleSwitchGroup = () => { setCurrentGroup(null); setGroupData(null); saveLocalGroup(null); setScreen("home"); setTab("home"); };
+  const handleSwitchGroup = () => { openGroupPicker(); };
 
-  const handleLogout = async () => { await supabase.auth.signOut(); setCurrentUser(null); setCurrentGroup(null); setGroupData(null); saveLocalUser(null); saveLocalGroup(null); };
+  const handleLogout = async () => { await supabase.auth.signOut(); setCurrentUser(null); setCurrentGroup(null); setGroupData(null); setJoinedGroups([]); saveLocalUser(null); saveLocalGroup(null); };
 
   const renderScreen = () => {
     if (tab === "rankings") return <RankingsScreen user={currentUser} users={users} events={events} />;
@@ -1191,7 +1274,7 @@ export default function App() {
       case "billsplit":
         return selectedEvent ? <BillSplitScreen event={selectedEvent} users={users} onDone={handleDone} /> : null;
       default:
-        return <HomeScreen user={currentUser} users={users} events={events} messages={messages} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSwitchGroup={handleSwitchGroup} onLogout={handleLogout} onSendMessage={sendMessage} onRsvp={handleRsvp} onRequestNotifications={requestNotificationPermission} notificationPermission={notificationPermission} subscriptionStatus={subscriptionStatus} />;
+        return <HomeScreen user={currentUser} users={users} events={events} messages={messages} joinedGroups={joinedGroups} group={groupData || currentGroup} onCreateEvent={() => setScreen("create")} onViewEvent={ev => { setSelectedEvent(ev); setScreen("event"); }} onSelectGroup={selectGroup} onOpenGroupPicker={openGroupPicker} onRsvp={handleRsvp} onLogout={handleLogout} onSendMessage={sendMessage} onRequestNotifications={requestNotificationPermission} notificationPermission={notificationPermission} subscriptionStatus={subscriptionStatus} />;
     }
   };
 

@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabase";
 import { db } from "./firebase";
 import {
-  doc, setDoc, onSnapshot, updateDoc,
+  doc, setDoc, onSnapshot, updateDoc, deleteDoc,
   collection, addDoc, query, where, getDocs, orderBy, arrayUnion
 } from "firebase/firestore";
 
@@ -15,6 +15,7 @@ const COLORS = {
 const FONTS = { display: "'Syne', sans-serif", body: "'DM Sans', sans-serif" };
 const PALETTE = ["#6C63FF","#EC4899","#22C55E","#F59E0B","#06B6D4","#EF4444","#F97316","#A855F7","#14B8A6","#84CC16"];
 const VAPID_PUBLIC_KEY = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEtnP-4Kfqxw3m6v4Hd1Z0LdOiS0skseSm6W8YP5bbv4W2OnHAgf_JevLIta_OQ1I5PiKyxHAtx4p9UfqbmZ8ziA";
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
 
 const urlBase64ToUint8Array = (base64String) => {
   const padding = "=".repeat((4 - base64String.length % 4) % 4);
@@ -38,6 +39,59 @@ const getLocalGroup = () => { try { const s = localStorage.getItem("squad_group"
 const saveLocalGroup = (g) => { try { localStorage.setItem("squad_group", JSON.stringify(g)); } catch {} };
 const getSeenWelcome = () => { try { return localStorage.getItem("squad_welcome") === "1"; } catch { return false; } };
 const setSeenWelcome = () => { try { localStorage.setItem("squad_welcome", "1"); } catch {} };
+
+const formatEventLocation = (location) => {
+  if (!location) return "Unknown location";
+  if (typeof location === "string") return location;
+  return location.address || "Unknown location";
+};
+
+const formatEventDateTime = (date, time) => {
+  if (!date && !time) return "TBA";
+  const dateStr = date ? new Date(date + "T00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "";
+  return [dateStr, time].filter(Boolean).join(" • ");
+};
+
+const loadGooglePlaces = () => {
+  return new Promise((resolve, reject) => {
+    if (window.google && window.google.maps && window.google.maps.places) {
+      resolve(window.google);
+      return;
+    }
+    const existing = document.getElementById("google-maps-script");
+    if (existing) {
+      existing.addEventListener("load", () => resolve(window.google));
+      existing.addEventListener("error", () => reject(new Error("Google Maps failed to load")));
+      return;
+    }
+    if (!GOOGLE_MAPS_API_KEY) {
+      reject(new Error("Google Maps API key not configured."));
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = "google-maps-script";
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(window.google);
+    script.onerror = () => reject(new Error("Google Maps failed to load."));
+    document.head.appendChild(script);
+  });
+};
+
+const geocodeFallback = async (input) => {
+  const encoded = encodeURIComponent(input);
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&q=${encoded}`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.map(item => ({
+    id: item.place_id || item.osm_id,
+    label: item.display_name,
+    address: item.display_name,
+    lat: parseFloat(item.lat),
+    lng: parseFloat(item.lon),
+  }));
+};
 
 const Avatar = ({ user, size = 36 }) => (
   <div style={{
@@ -485,7 +539,7 @@ function HomeScreen({ user, users, events, messages, group, joinedGroups, onCrea
               <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.text }}>New event invite</div>
               <button onClick={() => setShowPendingInvite(false)} style={{ background: "none", border: "none", color: COLORS.muted, fontSize: 14, cursor: "pointer", padding: 0 }}>Remind me later</button>
             </div>
-            <div style={{ fontSize: 14, color: COLORS.muted }}>{pendingEvent.title} • {pendingEvent.time} at {pendingEvent.location}</div>
+            <div style={{ fontSize: 14, color: COLORS.muted }}>{pendingEvent.title} • {formatEventDateTime(pendingEvent.date, pendingEvent.time)} at {formatEventLocation(pendingEvent.location)}</div>
             <div style={{ fontSize: 13, color: COLORS.muted, lineHeight: 1.5 }}>{pendingEvent.description || "Can you join this event?"}</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <Btn variant="success" onClick={() => { onRsvp(pendingEvent.id, "yes"); setShowPendingInvite(false); }} style={{ flex: 1, minWidth: 120 }}>YES, I can go</Btn>
@@ -521,8 +575,8 @@ function HomeScreen({ user, users, events, messages, group, joinedGroups, onCrea
                 <Avatar user={host} size={24} />
                 <span style={{ fontSize: 12, color: COLORS.muted }}>{host.name} hosting</span>
               </div>
-              <span style={{ fontSize: 12, color: COLORS.muted }}>📍 {ev.location}</span>
-              <span style={{ fontSize: 12, color: COLORS.muted }}>🕗 {ev.time}</span>
+              <span style={{ fontSize: 12, color: COLORS.muted }}>📍 {formatEventLocation(ev.location)}</span>
+              <span style={{ fontSize: 12, color: COLORS.muted }}>🕗 {formatEventDateTime(ev.date, ev.time)}</span>
             </div>
             <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span style={{ fontSize: 12, color: COLORS.muted }}>{yesCount} going</span>
@@ -561,9 +615,22 @@ function HomeScreen({ user, users, events, messages, group, joinedGroups, onCrea
           })}
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <input value={chatText} onChange={e => setChatText(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && chatText.trim()) { onSendMessage(chatText); setChatText(""); } }} placeholder="Type a message..."
+          <input value={chatText} onChange={e => setChatText(e.target.value)} onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                console.log("chat input Enter pressed", { text: chatText });
+                if (chatText.trim()) {
+                  onSendMessage(chatText);
+                  setChatText("");
+                }
+              }
+            }} placeholder="Type a message..."
             style={{ flex: 1, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px", background: COLORS.bg, color: COLORS.text, fontSize: 14, fontFamily: FONTS.body, outline: "none" }} />
-          <Btn onClick={() => { onSendMessage(chatText); setChatText(""); }} disabled={!chatText.trim()} style={{ padding: "12px 18px" }}>Send</Btn>
+          <Btn onClick={() => {
+              console.log("chat send button clicked", { text: chatText });
+              onSendMessage(chatText);
+              setChatText("");
+            }} disabled={!chatText.trim()} style={{ padding: "12px 18px" }}>Send</Btn>
         </div>
       </div>
     </div>
@@ -573,21 +640,107 @@ function HomeScreen({ user, users, events, messages, group, joinedGroups, onCrea
 // ─── CREATE EVENT ─────────────────────────────────────────────────────────────
 
 function CreateEventScreen({ user, users, group, onCreate, onBack }) {
-  const [form, setForm] = useState({ title: "", type: "Hangout", location: "", time: "", description: "" });
+  const [form, setForm] = useState({ title: "", type: "Hangout", locationAddress: "", locationCoords: null, date: "", time: "", description: "" });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+  const [placesReady, setPlacesReady] = useState(false);
+  const searchTimer = useRef(null);
   const types = ["Hangout", "House Party", "Club Night", "Dinner", "Movie", "Beach Day", "Road Trip"];
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    if (!GOOGLE_MAPS_API_KEY) {
+      setPickerError("Google Maps API key not configured. Search by address instead.");
+      return;
+    }
+    loadGooglePlaces()
+      .then(() => setPlacesReady(true))
+      .catch(err => setPickerError(err.message));
+  }, []);
+
+  useEffect(() => {
+    if (searchTimer.current) window.clearTimeout(searchTimer.current);
+    if (!searchQuery || searchQuery.length < 3) {
+      setSearchResults([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    setSearchLoading(true);
+    searchTimer.current = window.setTimeout(async () => {
+      try {
+        if (window.google?.maps?.places) {
+          const service = new window.google.maps.places.AutocompleteService();
+          service.getPlacePredictions({ input: searchQuery, types: ["geocode", "establishment"] }, (predictions, status) => {
+            if (status === "OK" && predictions) {
+              setSearchResults(predictions.map(p => ({ id: p.place_id, label: p.description })));
+            } else {
+              setSearchResults([]);
+            }
+            setSearchLoading(false);
+          });
+        } else {
+          const results = await geocodeFallback(searchQuery);
+          setSearchResults(results);
+          setSearchLoading(false);
+        }
+      } catch (error) {
+        setSearchResults([]);
+        setSearchLoading(false);
+        setPickerError("Location search failed. Try a different phrase.");
+      }
+    }, 300);
+
+    return () => {
+      if (searchTimer.current) window.clearTimeout(searchTimer.current);
+    };
+  }, [searchQuery]);
+
+  const handleSelectLocation = async (item) => {
+    setSearchResults([]);
+    setSearchQuery(item.label || item.address || "");
+    if (window.google?.maps?.places && item.id && !item.lat) {
+      const service = new window.google.maps.places.PlacesService(document.createElement("div"));
+      service.getDetails({ placeId: item.id, fields: ["formatted_address", "geometry"] }, (place, status) => {
+        if (status === "OK" && place && place.geometry && place.geometry.location) {
+          setForm(f => ({ ...f, locationAddress: place.formatted_address || item.label, locationCoords: { lat: place.geometry.location.lat(), lng: place.geometry.location.lng() } }));
+          setPickerError("");
+        } else {
+          setForm(f => ({ ...f, locationAddress: item.label || item.address, locationCoords: null }));
+          setPickerError("Could not fetch exact location details. Using search text instead.");
+        }
+      });
+    } else {
+      setForm(f => ({ ...f, locationAddress: item.address || item.label, locationCoords: item.lat && item.lng ? { lat: item.lat, lng: item.lng } : null }));
+    }
+  };
+
   const handleCreate = async () => {
-    if (!form.title || !form.location || !form.time) return;
+    if (!form.title || !form.locationAddress || !form.date || !form.time) return;
     setLoading(true);
     const rsvps = {};
     users.forEach(u => { if (u.id !== user.id) rsvps[u.id] = null; });
+    const eventLocation = {
+      address: form.locationAddress,
+      lat: form.locationCoords?.lat || null,
+      lng: form.locationCoords?.lng || null,
+    };
     const ev = {
-      title: form.title, type: form.type, location: form.location,
-      time: form.time, description: form.description,
-      hostId: user.id, groupId: group.id,
-      rsvps, status: "upcoming", createdAt: Date.now(),
+      title: form.title,
+      type: form.type,
+      location: eventLocation,
+      date: form.date,
+      time: form.time,
+      datetime: form.date && form.time ? new Date(`${form.date}T${form.time}`).getTime() : null,
+      description: form.description,
+      hostId: user.id,
+      groupId: group.id,
+      rsvps,
+      status: "upcoming",
+      createdAt: Date.now(),
       liveLocations: {},
     };
     const ref = await addDoc(collection(db, "events"), ev);
@@ -595,7 +748,7 @@ function CreateEventScreen({ user, users, group, onCreate, onBack }) {
   };
 
   return (
-    <div style={{ padding: "24px 20px", maxWidth: 480, margin: "0 auto" }}>
+    <div style={{ padding: "24px 20px", maxWidth: 520, margin: "0 auto" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
         <Btn variant="ghost" onClick={onBack} style={{ padding: "8px 14px", fontSize: 13 }}>←</Btn>
         <div style={{ fontSize: 20, fontFamily: FONTS.display, fontWeight: 800, color: COLORS.text }}>New Event</div>
@@ -614,13 +767,39 @@ function CreateEventScreen({ user, users, group, onCreate, onBack }) {
         </div>
         <div>
           <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>LOCATION</label>
-          <input value={form.location} onChange={e => set("location", e.target.value)} placeholder="Where are we going?"
+          <input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setForm(f => ({ ...f, locationAddress: "", locationCoords: null })); }} placeholder="Search for a Google place or address"
             style={{ width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "12px 14px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, marginTop: 6, boxSizing: "border-box", outline: "none" }} />
+          <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 8 }}>{pickerError || (GOOGLE_MAPS_API_KEY ? "Search locations and choose the exact place from the list." : "Search by address and the app will save coordinates if available.")}</div>
+          {searchLoading && <div style={{ fontSize: 13, color: COLORS.text, marginTop: 8 }}>Searching...</div>}
+          {searchResults.length > 0 && (
+            <div style={{ marginTop: 10, background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, maxHeight: 220, overflowY: "auto" }}>
+              {searchResults.map(item => (
+                <button key={item.id} onClick={() => handleSelectLocation(item)} style={{ width: "100%", textAlign: "left", padding: "12px 14px", border: "none", background: "transparent", color: COLORS.text, cursor: "pointer", fontFamily: FONTS.body, borderBottom: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{item.label}</div>
+                  {item.address && <div style={{ fontSize: 12, color: COLORS.muted, marginTop: 4 }}>{item.address}</div>}
+                </button>
+              ))}
+            </div>
+          )}
+          {form.locationAddress && (
+            <div style={{ marginTop: 12, background: COLORS.subtle, borderRadius: 14, padding: "12px 14px", color: COLORS.text, fontSize: 13 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Selected place</div>
+              <div>{form.locationAddress}</div>
+              {form.locationCoords && <div style={{ marginTop: 6, color: COLORS.muted }}>📍 {form.locationCoords.lat.toFixed(4)}, {form.locationCoords.lng.toFixed(4)}</div>}
+            </div>
+          )}
         </div>
-        <div>
-          <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>TIME</label>
-          <input value={form.time} onChange={e => set("time", e.target.value)} placeholder="e.g. Tonight, 9:00 PM"
-            style={{ width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "12px 14px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, marginTop: 6, boxSizing: "border-box", outline: "none" }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>DATE</label>
+            <input type="date" value={form.date} onChange={e => set("date", e.target.value)}
+              style={{ width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "12px 14px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, marginTop: 6, boxSizing: "border-box", outline: "none" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>TIME</label>
+            <input type="time" value={form.time} onChange={e => set("time", e.target.value)}
+              style={{ width: "100%", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "12px 14px", color: COLORS.text, fontSize: 15, fontFamily: FONTS.body, marginTop: 6, boxSizing: "border-box", outline: "none" }} />
+          </div>
         </div>
         <div>
           <label style={{ fontSize: 12, color: COLORS.muted, letterSpacing: 1, fontWeight: 600 }}>DESCRIPTION</label>
@@ -633,7 +812,7 @@ function CreateEventScreen({ user, users, group, onCreate, onBack }) {
             {users.filter(u => u.id !== user.id).map(u => <div key={u.id} style={{ marginRight: -6 }}><Avatar user={u} size={30} /></div>)}
           </div>
         </div>
-        <Btn onClick={handleCreate} disabled={!form.title || !form.location || !form.time || loading} style={{ width: "100%", marginTop: 8 }}>
+        <Btn onClick={handleCreate} disabled={!form.title || !form.locationAddress || !form.date || !form.time || loading} style={{ width: "100%", marginTop: 8 }}>
           {loading ? "Creating..." : "🚀 Send Invites to Crew"}
         </Btn>
       </div>
@@ -661,7 +840,7 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
       <div style={{ fontSize: 26, fontFamily: FONTS.display, fontWeight: 800, color: COLORS.text, marginTop: 8, marginBottom: 4, letterSpacing: -1 }}>{event.title}</div>
       <div style={{ fontSize: 14, color: COLORS.muted, marginBottom: 20 }}>{event.description}</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-        {[{ icon: "👤", label: "Host", val: host.name }, { icon: "🕗", label: "Time", val: event.time }, { icon: "📍", label: "Location", val: event.location }, { icon: "✅", label: "Going", val: `${yesUsers.length} confirmed` }].map(({ icon, label, val }) => (
+        {[{ icon: "👤", label: "Host", val: host.name }, { icon: "🕗", label: "Time", val: formatEventDateTime(event.date, event.time) }, { icon: "📍", label: "Location", val: formatEventLocation(event.location) }, { icon: "✅", label: "Going", val: `${yesUsers.length} confirmed` }].map(({ icon, label, val }) => (
           <div key={label} style={{ background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px" }}>
             <div style={{ fontSize: 11, color: COLORS.muted, letterSpacing: 1 }}>{label.toUpperCase()}</div>
             <div style={{ fontSize: 14, color: COLORS.text, fontWeight: 600, marginTop: 4 }}>{icon} {val}</div>
@@ -702,7 +881,7 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
         ))}
       </div>
 
-      {isHost && event.status === "upcoming" && (
+      {(isHost || myRsvp === "yes") && event.status === "upcoming" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Btn variant="secondary" onClick={onViewLive} style={{ width: "100%" }}>📍 Live Locations ({yesUsers.length} on the way)</Btn>
           <Btn variant="danger" onClick={onEndEvent} style={{ width: "100%" }}>🏁 End Event</Btn>
@@ -716,45 +895,77 @@ function EventScreen({ event, user, users, onRsvp, onViewLive, onEndEvent, onBac
 
 function LiveLocationScreen({ event, user, users, onBack }) {
   const [myLoc, setMyLoc] = useState(null);
-  const [locs, setLocs] = useState(event.liveLocations || {});
-  const mapRef = React.useRef(null);
-  const mapInstanceRef = React.useRef(null);
-  const markersRef = React.useRef({});
+  const [locations, setLocations] = useState([]);
+  const [geoError, setGeoError] = useState("");
+  const latestLocationRef = React.useRef(null);
+
+  const isYesRsvp = event.rsvps?.[user.id] === "yes";
 
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, "events", event.id), snap => {
-      const data = snap.data();
-      if (data && data.liveLocations) setLocs(data.liveLocations);
+    const locationsCollection = collection(db, "events", event.id, "locations");
+    const unsub = onSnapshot(locationsCollection, snap => {
+      setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
     return unsub;
   }, [event.id]);
 
   useEffect(() => {
-    if (!navigator.geolocation) return;
-    const watch = navigator.geolocation.watchPosition(async pos => {
+    if (!isYesRsvp) return;
+    if (!navigator.geolocation) {
+      setGeoError("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    let watchId = null;
+    let intervalId = null;
+    const writeLocation = async (loc) => {
+      if (!loc) return;
+      try {
+        await setDoc(doc(db, "events", event.id, "locations", user.id), {
+          userId: user.id,
+          name: user.name,
+          avatar: user.avatar,
+          color: user.color,
+          lat: loc.lat,
+          lng: loc.lng,
+          updatedAt: Date.now(),
+        });
+      } catch (error) {
+        console.warn("Failed to save live location:", error);
+      }
+    };
+
+    watchId = navigator.geolocation.watchPosition(pos => {
       const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude, updatedAt: Date.now() };
+      latestLocationRef.current = loc;
       setMyLoc(loc);
-      await updateDoc(doc(db, "events", event.id), { [`liveLocations.${user.id}`]: loc });
-    }, null, { enableHighAccuracy: true });
-    return () => navigator.geolocation.clearWatch(watch);
-  }, [event.id, user.id]);
+      writeLocation(loc);
+    }, err => {
+      setGeoError(err.message || "Failed to get location.");
+    }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 });
 
-  // Build OpenStreetMap URL with all markers
-  const locEntries = Object.entries(locs);
+    intervalId = window.setInterval(() => {
+      if (latestLocationRef.current) {
+        writeLocation(latestLocationRef.current);
+      }
+    }, 10000);
+
+    return () => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
+  }, [event.id, isYesRsvp, user.id, user.name, user.avatar, user.color]);
+
+  const locEntries = locations;
   const hasLocs = locEntries.length > 0;
-  const centerLat = hasLocs ? locEntries.reduce((s,[,l]) => s + l.lat, 0) / locEntries.length : 20.5937;
-  const centerLng = hasLocs ? locEntries.reduce((s,[,l]) => s + l.lng, 0) / locEntries.length : 78.9629;
 
-  // Build iframe src for OpenStreetMap with markers
-  const markerParams = locEntries.map(([uid, loc]) => {
-    const u = users.find(x => x.id === uid);
-    return `marker=${loc.lat},${loc.lng}`;
-  }).join("&");
-
+  const centerLat = hasLocs ? locEntries.reduce((sum, loc) => sum + loc.lat, 0) / locEntries.length : 20.5937;
+  const centerLng = hasLocs ? locEntries.reduce((sum, loc) => sum + loc.lng, 0) / locEntries.length : 78.9629;
+  const markerParams = locEntries.map(loc => `marker=${loc.lat},${loc.lng}`).join("&");
   const mapSrc = `https://www.openstreetmap.org/export/embed.html?bbox=${centerLng-0.02},${centerLat-0.02},${centerLng+0.02},${centerLat+0.02}&layer=mapnik&${markerParams}`;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: COLORS.bg }}>
+    <div style={{ display: "flex", flexDirection: "column", minHeight: "100vh", background: COLORS.bg }}>
       <div style={{ padding: "16px 20px", display: "flex", alignItems: "center", gap: 12 }}>
         <Btn variant="ghost" onClick={onBack} style={{ padding: "8px 14px", fontSize: 13 }}>←</Btn>
         <div style={{ fontSize: 18, fontFamily: FONTS.display, fontWeight: 700, color: COLORS.text }}>Live Locations</div>
@@ -764,7 +975,6 @@ function LiveLocationScreen({ event, user, users, onBack }) {
         </div>
       </div>
 
-      {/* MAP */}
       <div style={{ margin: "0 16px", borderRadius: 16, overflow: "hidden", border: `1px solid ${COLORS.border}`, flex: "0 0 300px" }}>
         {hasLocs ? (
           <iframe
@@ -776,33 +986,30 @@ function LiveLocationScreen({ event, user, users, onBack }) {
         ) : (
           <div style={{ height: 300, background: COLORS.subtle, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 32 }}>🗺️</div>
-            <div style={{ fontSize: 13, color: COLORS.muted }}>Waiting for location data...</div>
+            <div style={{ fontSize: 13, color: COLORS.muted }}>{geoError ? geoError : "Waiting for location data..."}</div>
           </div>
         )}
       </div>
 
-      {myLoc && <div style={{ margin: "12px 16px 0", background: COLORS.greenDim, border: `1px solid ${COLORS.green}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: COLORS.green }}>📍 Your location is being shared live</div>}
-      {!myLoc && <div style={{ margin: "12px 16px 0", background: COLORS.amberDim, border: `1px solid ${COLORS.amber}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: COLORS.amber }}>📍 Allow location access to appear on the map</div>}
+      <div style={{ margin: "12px 16px 0", background: isYesRsvp ? COLORS.greenDim : COLORS.amberDim, border: `1px solid ${isYesRsvp ? COLORS.green : COLORS.amber}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: isYesRsvp ? COLORS.green : COLORS.amber }}>
+        {isYesRsvp ? "You are sharing your location with other guests." : "Only members who RSVPd Yes can share and view live locations."}
+      </div>
 
-      {/* PEOPLE LIST */}
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
-        {locEntries.map(([uid, loc]) => {
-          const u = users.find(x => x.id === uid);
-          if (!u) return null;
-          const isMe = uid === user.id;
+        {locEntries.length > 0 ? locEntries.map(loc => {
+          const isMe = loc.userId === user.id;
           const timeAgo = loc.updatedAt ? Math.round((Date.now() - loc.updatedAt) / 1000) : null;
           return (
-            <div key={uid} style={{ display: "flex", alignItems: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px" }}>
-              <Avatar user={u} size={36} />
+            <div key={loc.userId} style={{ display: "flex", alignItems: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px" }}>
+              <div style={{ width: 36, height: 36, borderRadius: "50%", background: loc.color + "22", border: `1px solid ${loc.color}`, display: "flex", alignItems: "center", justifyContent: "center", color: loc.color, fontFamily: FONTS.body, fontWeight: 700 }}>{loc.avatar || loc.name?.slice(0,2).toUpperCase()}</div>
               <div style={{ marginLeft: 12, flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{u.name} {isMe && <span style={{ fontSize: 11, color: COLORS.muted }}>(you)</span>}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{loc.name} {isMe && <span style={{ fontSize: 11, color: COLORS.muted }}>(you)</span>}</div>
                 <div style={{ fontSize: 12, color: COLORS.muted }}>{timeAgo !== null ? `Updated ${timeAgo}s ago` : "Sharing location"}</div>
               </div>
               <div style={{ fontSize: 11, color: COLORS.green, background: COLORS.greenDim, padding: "4px 10px", borderRadius: 10 }}>📍 Live</div>
             </div>
           );
-        })}
-        {locEntries.length === 0 && <div style={{ textAlign: "center", color: COLORS.muted, padding: "20px 0", fontSize: 14 }}>No one sharing location yet</div>}
+        }) : <div style={{ textAlign: "center", color: COLORS.muted, padding: "20px 0", fontSize: 14 }}>No live locations yet.</div>}
       </div>
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
     </div>
@@ -1198,14 +1405,23 @@ export default function App() {
   }, [currentGroup?.id]);
 
   useEffect(() => {
-    if (!currentGroup?.id) return;
-    const messagesCollection = collection(db, "groups", currentGroup.id, "messages");
+    const activeGroupId = currentGroup?.id || groupData?.id;
+    if (!activeGroupId) {
+      console.log("Message listener: no active group selected yet.");
+      setMessages([]);
+      return;
+    }
+    console.log("Message listener: subscribing to group messages", activeGroupId);
+    const messagesCollection = collection(db, "groups", activeGroupId, "messages");
     const msgQuery = query(messagesCollection, orderBy("createdAt", "asc"));
     const unsub = onSnapshot(msgQuery, snap => {
+      console.log("Message listener: snapshot received", activeGroupId, snap.size, snap.docs.map(d => d.id));
       setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, error => {
+      console.error("Message listener error", activeGroupId, error);
     });
     return unsub;
-  }, [currentGroup?.id]);
+  }, [currentGroup?.id, groupData?.id]);
 
   useEffect(() => {
     if (!selectedEvent?.id) return;
@@ -1228,21 +1444,55 @@ export default function App() {
   }, [groupData?.members]);
 
   const sendMessage = async (text) => {
-    if (!currentGroup?.id || !text?.trim()) return;
-    await addDoc(collection(db, "groups", currentGroup.id, "messages"), {
-      groupId: currentGroup.id,
-      text: text.trim(),
-      userId: currentUser.id,
-      userName: currentUser.name,
-      color: currentUser.color,
-      createdAt: Date.now(),
-    });
+    const activeGroup = groupData || currentGroup;
+    const cleanedText = text?.trim();
+    console.log("sendMessage called", { cleanedText, activeGroupId: activeGroup?.id, currentUserId: currentUser?.id });
+    if (!activeGroup?.id) {
+      console.warn("sendMessage aborted: no active group", { activeGroup, currentGroup, groupData });
+      return;
+    }
+    if (!cleanedText) {
+      console.warn("sendMessage aborted: empty text");
+      return;
+    }
+    try {
+      const docRef = await addDoc(collection(db, "groups", activeGroup.id, "messages"), {
+        groupId: activeGroup.id,
+        text: cleanedText,
+        userId: currentUser.id,
+        userName: currentUser.name,
+        color: currentUser.color,
+        createdAt: Date.now(),
+      });
+      console.log("sendMessage success", docRef.id, { groupId: activeGroup.id, text: cleanedText });
+    } catch (error) {
+      console.error("sendMessage failed", error, { groupId: activeGroup.id, text: cleanedText });
+    }
   };
 
-  const handleEndEvent = () => setScreen("billsplit");
+  const handleEndEvent = async () => {
+    if (selectedEvent) {
+      await deleteEventData(selectedEvent.id);
+    }
+    setScreen("billsplit");
+  };
+
+  const deleteEventData = async (eventId) => {
+    try {
+      const msgSnapshot = await getDocs(collection(db, "events", eventId, "messages"));
+      await Promise.all(msgSnapshot.docs.map(msg => deleteDoc(doc(db, "events", eventId, "messages", msg.id))));
+    } catch (error) {
+      console.warn("Failed to delete event messages:", error);
+    }
+
+    try {
+      await deleteDoc(doc(db, "events", eventId));
+    } catch (error) {
+      console.error("Failed to delete event document:", error);
+    }
+  };
 
   const handleDone = async () => {
-    if (selectedEvent) await updateDoc(doc(db, "events", selectedEvent.id), { status: "ended" });
     setSelectedEvent(null);
     setScreen("home");
   };

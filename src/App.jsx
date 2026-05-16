@@ -955,13 +955,33 @@ function LiveLocationScreen({ event, user, users, onBack }) {
 
   useEffect(() => {
     const loadLocations = async () => {
-      const { data: locs } = await supabase.from('locations').select('*').eq('event_id', event.id);
+      const { data: locs, error } = await supabase
+        .from('locations')
+        .select('event_id, user_id, user_name, user_avatar, user_color, lat, lng, updated_at')
+        .eq('event_id', event.id)
+        .order('updated_at', { ascending: false });
+      if (error) {
+        console.warn('Failed to load live locations:', error);
+        setLocations([]);
+        return;
+      }
       setLocations(locs || []);
     };
-    loadLocations();
 
-    const sub = supabase.channel(`locations-${event.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'locations', filter: `event_id=eq.${event.id}` }, () => { loadLocations(); }).subscribe();
-    return () => { supabase.removeChannel(sub); };
+    loadLocations();
+    const pollId = window.setInterval(loadLocations, 10000);
+
+    const sub = supabase
+      .channel(`locations-${event.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'locations', filter: `event_id=eq.${event.id}` }, () => {
+        loadLocations();
+      })
+      .subscribe();
+
+    return () => {
+      window.clearInterval(pollId);
+      supabase.removeChannel(sub);
+    };
   }, [event.id]);
 
   useEffect(() => {
@@ -979,13 +999,13 @@ function LiveLocationScreen({ event, user, users, onBack }) {
         await supabase.from('locations').upsert({
           event_id: event.id,
           user_id: user.id,
-          name: user.name,
-          avatar: user.avatar,
-          color: user.color,
+          user_name: user.name,
+          user_avatar: user.avatar,
+          user_color: user.color,
           lat: loc.lat,
           lng: loc.lng,
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'event_id,user_id' });
+        }, { onConflict: 'event_id,user_id', returning: 'minimal' });
       } catch (error) {
         console.warn("Failed to save live location:", error);
       }
@@ -1012,7 +1032,15 @@ function LiveLocationScreen({ event, user, users, onBack }) {
     };
   }, [event.id, isYesRsvp, user.id, user.name, user.avatar, user.color]);
 
-  const locEntries = locations;
+  const normalizedLocations = locations.map(loc => ({
+    ...loc,
+    name: loc.user_name || loc.user_name || "Guest",
+    avatar: loc.user_avatar || loc.user_avatar || "",
+    color: loc.user_color || loc.user_color || COLORS.accent,
+    updatedAt: loc.updated_at ? new Date(loc.updated_at).getTime() : loc.updatedAt || null,
+  }));
+
+  const locEntries = normalizedLocations;
   const hasLocs = locEntries.length > 0;
 
   const centerLat = hasLocs ? locEntries.reduce((sum, loc) => sum + loc.lat, 0) / locEntries.length : 20.5937;
@@ -1031,7 +1059,7 @@ function LiveLocationScreen({ event, user, users, onBack }) {
         </div>
       </div>
 
-      <div style={{ margin: "0 16px", borderRadius: 16, overflow: "hidden", border: `1px solid ${COLORS.border}`, flex: "0 0 300px" }}>
+      <div style={{ margin: "0 16px", borderRadius: 16, overflow: "hidden", border: `1px solid ${COLORS.border}`, flex: "0 0 300px", position: "relative" }}>
         {hasLocs ? (
           <iframe
             src={mapSrc}
@@ -1045,6 +1073,16 @@ function LiveLocationScreen({ event, user, users, onBack }) {
             <div style={{ fontSize: 13, color: COLORS.muted }}>{geoError ? geoError : "Waiting for location data..."}</div>
           </div>
         )}
+        {hasLocs && (
+          <div style={{ position: "absolute", left: 16, bottom: 16, background: "rgba(0,0,0,0.65)", color: "#fff", borderRadius: 12, padding: "8px 12px", display: "flex", gap: 10, flexWrap: "wrap", maxWidth: "calc(100% - 32px)" }}>
+            {locEntries.slice(0, 5).map(loc => (
+              <div key={loc.user_id} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.12)", borderRadius: 999, padding: "6px 10px" }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: loc.color + "22", border: `1px solid ${loc.color}`, display: "flex", alignItems: "center", justifyContent: "center", color: loc.color, fontSize: 12, fontWeight: 700 }}>{loc.avatar || loc.name?.slice(0,2).toUpperCase()}</div>
+                <span style={{ fontSize: 12, color: "#fff", fontWeight: 600 }}>{loc.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ margin: "12px 16px 0", background: isYesRsvp ? COLORS.greenDim : COLORS.amberDim, border: `1px solid ${isYesRsvp ? COLORS.green : COLORS.amber}44`, borderRadius: 12, padding: "10px 14px", fontSize: 13, color: isYesRsvp ? COLORS.green : COLORS.amber }}>
@@ -1053,10 +1091,10 @@ function LiveLocationScreen({ event, user, users, onBack }) {
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
         {locEntries.length > 0 ? locEntries.map(loc => {
-          const isMe = loc.userId === user.id;
+          const isMe = loc.user_id === user.id;
           const timeAgo = loc.updatedAt ? Math.round((Date.now() - loc.updatedAt) / 1000) : null;
           return (
-            <div key={loc.userId} style={{ display: "flex", alignItems: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px" }}>
+            <div key={loc.user_id} style={{ display: "flex", alignItems: "center", background: COLORS.card, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: "12px 14px" }}>
               <div style={{ width: 36, height: 36, borderRadius: "50%", background: loc.color + "22", border: `1px solid ${loc.color}`, display: "flex", alignItems: "center", justifyContent: "center", color: loc.color, fontFamily: FONTS.body, fontWeight: 700 }}>{loc.avatar || loc.name?.slice(0,2).toUpperCase()}</div>
               <div style={{ marginLeft: 12, flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{loc.name} {isMe && <span style={{ fontSize: 11, color: COLORS.muted }}>(you)</span>}</div>

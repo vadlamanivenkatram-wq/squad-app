@@ -3,18 +3,19 @@
 ## Project Overview
 A social group app called "Squad" where friends can plan events, track RSVPs, split bills, see live locations, and view rankings.
 
-Live at: https://thecircle-seven.vercel.app
+Live at: https://squad-app.vadlamanivenkatram.workers.dev
 
 ## Tech Stack
 - React + Vite (single page app)
-- Firebase Firestore — real-time database
-- Supabase — Google OAuth authentication
-- Vercel — deployment (auto-deploys on git push to master)
+- Supabase PostgreSQL — primary database with real-time channels
+- Supabase Auth — Google OAuth and manual username/password auth
+- Cloudflare Workers & Pages — deployment (manual deploy via Wrangler or dashboard)
 
 ## Key Files
 - `src/App.jsx` — entire app lives here (all screens in one file, ~940+ lines)
-- `src/firebase.js` — initializes Firebase, exports `db`
-- `src/supabase.js` — initializes Supabase client for Google auth
+- `src/supabase.js` — initializes Supabase client and exports `supabase`
+- `supabase/migrations/001_create_schema.sql` — Supabase schema for users, groups, events, rsvps, messages, locations
+- `supabase/QUERY_REFERENCE.js` — Firebase→Supabase query migration guide
 - `src/App.css` — global styles
 
 ## Environment
@@ -29,37 +30,35 @@ npm run dev                        # local dev server
 npm run build                      # production build (run to check for errors before pushing)
 git add .
 git commit -m "message"
-git push                           # triggers Vercel auto-deploy
+git push                           # push to git (manual deploy required for Cloudflare)
 ```
 
 ## Architecture Notes
 - All screens are functions inside `src/App.jsx` (LoginScreen, GroupSelectScreen, HomeScreen, etc.)
-- `db` is exported from `./firebase` and must be imported at the top of App.jsx
-- Supabase is used ONLY for Google auth — all data is stored in Firebase Firestore
-- Firebase auth is NOT used — only Supabase auth for Google sign-in
+- Supabase client is imported from `./supabase` and used for all database and auth operations
+- Supabase tables replace Firestore collections and subcollections with relational tables and junction tables
+- Real-time app behavior is now handled by Supabase Realtime channels on `groups`, `events`, `messages`, and `locations`
+- Supabase Auth manages user sessions and Google sign-in
 
 ## Auth Flow
 1. User clicks "Continue with Google"
 2. Supabase `signInWithOAuth({ provider: 'google' })` redirects to Google
-3. Google redirects back to `https://thecircle-seven.vercel.app`
+3. Google redirects back to `https://squad-app.vadlamanivenkatram.workers.dev`
 4. `onAuthStateChange` listener in LoginScreen catches the session
-5. `checkGoogleAuth()` looks up or creates the user in Firestore
+5. `checkGoogleAuth()` looks up or creates the user in Supabase `users`
 6. `onLogin(user)` is called to set the current user in app state
 
 ## Important Fixes Already Applied
-- `db` must be imported: `import { db } from "./firebase"` at top of App.jsx
-- Supabase Site URL and Redirect URL must be `https://thecircle-seven.vercel.app`
+- Supabase Site URL and Redirect URL must be `https://squad-app.vadlamanivenkatram.workers.dev`
 - `handleLogout` must call `await supabase.auth.signOut()` to clear session
 - `onAuthStateChange` listener must be set up in LoginScreen useEffect
+- Firebase imports and Firestore SDK calls were removed from `src/App.jsx`
+- Database writes now use Supabase inserts/updates and real-time subscriptions use Supabase channels
 
 ## Supabase Config
 - Project URL: https://cgyazwnwrhegiqubdiso.supabase.co
-- Redirect URL configured: https://thecircle-seven.vercel.app
+- Redirect URL configured: https://squad-app.vadlamanivenkatram.workers.dev
 - Google provider: enabled
-
-## Firebase Config
-- Project ID: thecircle-c5b2a
-- Auth domain: thecircle-c5b2a.firebaseapp.com
 
 ## Features
 - Welcome/landing page

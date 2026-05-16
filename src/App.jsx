@@ -1,10 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabase";
-import { db } from "./firebase";
-import {
-  doc, setDoc, onSnapshot, updateDoc, deleteDoc,
-  collection, addDoc, query, where, getDocs, orderBy, arrayUnion
-} from "firebase/firestore";
 
 const COLORS = {
   bg: "#0A0A0F", card: "#13131A", border: "#1E1E2E",
@@ -51,6 +46,40 @@ const formatEventDateTime = (date, time) => {
   const dateStr = date ? new Date(date + "T00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "";
   return [dateStr, time].filter(Boolean).join(" • ");
 };
+
+const normalizeGroup = (group, memberIds = []) => ({
+  ...group,
+  members: memberIds,
+  createdAt: group.created_at || group.createdAt || null,
+});
+
+const normalizeEvent = (event, rsvps = {}) => ({
+  ...event,
+  hostId: event.host_id || event.hostId,
+  groupId: event.group_id || event.groupId,
+  createdAt: event.created_at || event.createdAt || null,
+  location: {
+    address: event.location_address || event.location?.address || "",
+    lat: event.location_lat ?? event.location?.lat ?? null,
+    lng: event.location_lng ?? event.location?.lng ?? null,
+  },
+  rsvps: event.rsvps || rsvps || {},
+});
+
+const normalizeMessage = (msg) => ({
+  ...msg,
+  userId: msg.user_id || msg.userId,
+  userName: msg.user_name || msg.userName,
+  groupId: msg.group_id || msg.groupId,
+  createdAt: msg.created_at || msg.createdAt || null,
+});
+
+const normalizeLocation = (loc) => ({
+  ...loc,
+  userId: loc.user_id || loc.userId,
+  eventId: loc.event_id || loc.eventId,
+  updatedAt: loc.updated_at || loc.updatedAt || null,
+});
 
 const loadGooglePlaces = () => {
   return new Promise((resolve, reject) => {
@@ -196,17 +225,18 @@ function LoginScreen({ onLogin }) {
 
   useEffect(() => {
     const checkGoogleAuth = async () => {
-  const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         const gUser = session.user;
-        const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
-        if (!snap.empty) {
-          const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
+        const { data: users } = await supabase.from('users').select('*').eq('email', gUser.email);
+        if (users && users.length > 0) {
+          const u = users[0];
           saveLocalUser(u); onLogin(u);
         } else {
-          const newUser = { name: gUser.user_metadata?.full_name || gUser.email.split("@")[0], email: gUser.email, avatar: getInitials(gUser.user_metadata?.full_name || gUser.email), color: PALETTE[Math.floor(Math.random() * PALETTE.length)], attended: 0, total: 0, streak: 0, joinedGroups: [] };
-          const ref = await addDoc(collection(db, "users"), newUser);
-          const u = { id: ref.id, ...newUser };
+          const newUser = { name: gUser.user_metadata?.full_name || gUser.email.split("@")[0], email: gUser.email, avatar: getInitials(gUser.user_metadata?.full_name || gUser.email), color: PALETTE[Math.floor(Math.random() * PALETTE.length)], attended: 0, total: 0, streak: 0 };
+          const { data, error } = await supabase.from('users').insert([newUser]).select();
+          if (error) { console.error('User creation error:', error); return; }
+          const u = data[0];
           saveLocalUser(u); onLogin(u);
         }
       }
@@ -219,15 +249,15 @@ function LoginScreen({ onLogin }) {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => subscription?.unsubscribe();
   }, []);
 
   const handleLogin = async () => {
     if (!username.trim() || !password.trim()) { setError("Please fill in all fields."); return; }
     setLoading(true); setError("");
-    const snap = await getDocs(query(collection(db, "users"), where("username", "==", username.trim().toLowerCase())));
-    if (snap.empty) { setError("No account found with that username."); setLoading(false); return; }
-    const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
+    const { data: users } = await supabase.from('users').select('*').eq('username', username.trim().toLowerCase());
+    if (!users || users.length === 0) { setError("No account found with that username."); setLoading(false); return; }
+    const u = users[0];
     if (u.password !== password) { setError("Incorrect password."); setLoading(false); return; }
     saveLocalUser(u); onLogin(u);
   };
@@ -237,14 +267,15 @@ function LoginScreen({ onLogin }) {
       if (!name.trim() || !username.trim() || !password.trim()) { setError("Please fill in all fields."); return; }
       if (password.length < 4) { setError("Password must be at least 4 characters."); return; }
       setLoading(true); setError("");
-      const snap = await getDocs(query(collection(db, "users"), where("username", "==", username.trim().toLowerCase())));
-      if (!snap.empty) { setError("Username already taken, try another."); setLoading(false); return; }
+      const { data: users } = await supabase.from('users').select('*').eq('username', username.trim().toLowerCase());
+      if (users && users.length > 0) { setError("Username already taken, try another."); setLoading(false); return; }
       setLoading(false); setStep("color"); return;
     }
     setLoading(true);
-    const newUser = { name: name.trim(), username: username.trim().toLowerCase(), password, avatar: getInitials(name), color, attended: 0, total: 0, streak: 0, joinedGroups: [] };
-    const ref = await addDoc(collection(db, "users"), newUser);
-    const u = { id: ref.id, ...newUser };
+    const newUser = { name: name.trim(), username: username.trim().toLowerCase(), password, avatar: getInitials(name), color, attended: 0, total: 0, streak: 0 };
+    const { data, error } = await supabase.from('users').insert([newUser]).select();
+    if (error) { setError('Signup failed: ' + error.message); setLoading(false); return; }
+    const u = data[0];
     saveLocalUser(u); onLogin(u);
   };
 
@@ -341,12 +372,31 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
   const [allGroups, setAllGroups] = useState([]);
 
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, "groups"), snap => {
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setAllGroups(all);
-      setMyGroups(all.filter(g => g.members && g.members.includes(user.id)));
-    });
-    return unsub;
+    const loadGroupMemberships = async (groupIds = []) => {
+      if (!groupIds.length) return {};
+      const { data: memberships } = await supabase.from('group_members').select('group_id,user_id').in('group_id', groupIds);
+      const map = {};
+      (memberships || []).forEach(m => {
+        if (!map[m.group_id]) map[m.group_id] = [];
+        map[m.group_id].push(m.user_id);
+      });
+      return map;
+    };
+
+    const loadGroups = async () => {
+      const { data: groups } = await supabase.from('groups').select('*');
+      const groupIds = (groups || []).map(g => g.id);
+      const membershipMap = await loadGroupMemberships(groupIds);
+      const normalizedGroups = (groups || []).map(g => normalizeGroup(g, membershipMap[g.id] || []));
+      const { data: myMemberships } = await supabase.from('group_members').select('group_id').eq('user_id', user.id);
+      const myGroupIds = myMemberships?.map(m => m.group_id) || [];
+      setAllGroups(normalizedGroups);
+      setMyGroups(normalizedGroups.filter(g => myGroupIds.includes(g.id)));
+    };
+    loadGroups();
+
+    const sub = supabase.channel('groups').on('postgres_changes', { event: '*', schema: 'public', table: 'groups' }, () => { loadGroups(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [user.id]);
 
   const genUniqueCode = () => {
@@ -361,10 +411,12 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
   const handleCreate = async () => {
     if (groupName.trim().length < 2) return;
     setLoading(true);
-    const newGroup = { name: groupName.trim(), code: generatedCode, members: [user.id], createdBy: user.id, createdAt: Date.now() };
-    const ref = await addDoc(collection(db, "groups"), newGroup);
-    const g = { id: ref.id, ...newGroup };
-    await updateDoc(doc(db, "users", user.id), { joinedGroups: arrayUnion(g.id) });
+    const newGroup = { name: groupName.trim(), code: generatedCode, createdBy: user.id, createdAt: new Date().toISOString() };
+    const { data: group, error: groupError } = await supabase.from('groups').insert([newGroup]).select();
+    if (groupError || !group) { console.error('Group creation error:', groupError); setLoading(false); return; }
+    const g = { ...group[0], members: [user.id] };
+    const { error: memberError } = await supabase.from('group_members').insert([{ group_id: g.id, user_id: user.id }]);
+    if (memberError) { console.error('Member insertion error:', memberError); setLoading(false); return; }
     saveLocalGroup(g);
     onCreateGroup(g);
     setLoading(false);
@@ -374,14 +426,16 @@ function GroupSelectScreen({ user, onSelectGroup, onCreateGroup, onJoinGroup }) 
     const code = joinCode.trim();
     const found = allGroups.find(g => g.code === code);
     if (!found) { setJoinError("No group found with that code."); return; }
-    if (found.members && found.members.includes(user.id)) { setJoinError("You're already in this group!"); return; }
-    if (found.members && found.members.length >= 15) { setJoinError("This group is full (15 max)."); return; }
+    const { data: existing } = await supabase.from('group_members').select('id').eq('group_id', found.id).eq('user_id', user.id);
+    if (existing && existing.length > 0) { setJoinError("You're already in this group!"); return; }
+    const { data: memberCount } = await supabase.from('group_members').select('id').eq('group_id', found.id);
+    if (memberCount && memberCount.length >= 15) { setJoinError("This group is full (15 max)."); return; }
     setLoading(true);
-    await updateDoc(doc(db, "groups", found.id), { members: [...(found.members || []), user.id] });
-    await updateDoc(doc(db, "users", user.id), { joinedGroups: arrayUnion(found.id) });
-    const updated = { ...found, members: [...(found.members || []), user.id] };
-    saveLocalGroup(updated);
-    onJoinGroup(updated);
+    const { error: memberError } = await supabase.from('group_members').insert([{ group_id: found.id, user_id: user.id }]);
+    if (memberError) { console.error('Join error:', memberError); setLoading(false); return; }
+    const updatedGroup = { ...found, members: [...(found.members || []), user.id] };
+    saveLocalGroup(updatedGroup);
+    onJoinGroup(updatedGroup);
     setLoading(false);
   };
 
@@ -721,30 +775,28 @@ function CreateEventScreen({ user, users, group, onCreate, onBack }) {
   const handleCreate = async () => {
     if (!form.title || !form.locationAddress || !form.date || !form.time) return;
     setLoading(true);
-    const rsvps = {};
-    users.forEach(u => { if (u.id !== user.id) rsvps[u.id] = null; });
-    const eventLocation = {
-      address: form.locationAddress,
-      lat: form.locationCoords?.lat || null,
-      lng: form.locationCoords?.lng || null,
-    };
     const ev = {
       title: form.title,
       type: form.type,
-      location: eventLocation,
+      location_address: form.locationAddress,
+      location_lat: form.locationCoords?.lat || null,
+      location_lng: form.locationCoords?.lng || null,
       date: form.date,
       time: form.time,
-      datetime: form.date && form.time ? new Date(`${form.date}T${form.time}`).getTime() : null,
+      datetime: form.date && form.time ? new Date(`${form.date}T${form.time}`).toISOString() : null,
       description: form.description,
-      hostId: user.id,
-      groupId: group.id,
-      rsvps,
+      host_id: user.id,
+      group_id: group.id,
       status: "upcoming",
-      createdAt: Date.now(),
-      liveLocations: {},
+      created_at: new Date().toISOString(),
     };
-    const ref = await addDoc(collection(db, "events"), ev);
-    onCreate({ id: ref.id, ...ev });
+    const { data: event, error: eventError } = await supabase.from('events').insert([ev]).select();
+    if (eventError || !event) { console.error('Event creation error:', eventError); setLoading(false); return; }
+    const eventId = event[0].id;
+    const rsvpPromises = users.filter(u => u.id !== user.id).map(u => supabase.from('rsvps').insert([{ event_id: eventId, user_id: u.id, response: null }]));
+    await Promise.all(rsvpPromises);
+    onCreate(normalizeEvent(event[0], {}));
+    setLoading(false);
   };
 
   return (
@@ -902,11 +954,14 @@ function LiveLocationScreen({ event, user, users, onBack }) {
   const isYesRsvp = event.rsvps?.[user.id] === "yes";
 
   useEffect(() => {
-    const locationsCollection = collection(db, "events", event.id, "locations");
-    const unsub = onSnapshot(locationsCollection, snap => {
-      setLocations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-    return unsub;
+    const loadLocations = async () => {
+      const { data: locs } = await supabase.from('locations').select('*').eq('event_id', event.id);
+      setLocations(locs || []);
+    };
+    loadLocations();
+
+    const sub = supabase.channel(`locations-${event.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'locations', filter: `event_id=eq.${event.id}` }, () => { loadLocations(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [event.id]);
 
   useEffect(() => {
@@ -921,15 +976,16 @@ function LiveLocationScreen({ event, user, users, onBack }) {
     const writeLocation = async (loc) => {
       if (!loc) return;
       try {
-        await setDoc(doc(db, "events", event.id, "locations", user.id), {
-          userId: user.id,
+        await supabase.from('locations').upsert({
+          event_id: event.id,
+          user_id: user.id,
           name: user.name,
           avatar: user.avatar,
           color: user.color,
           lat: loc.lat,
           lng: loc.lng,
-          updatedAt: Date.now(),
-        });
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'event_id,user_id' });
       } catch (error) {
         console.warn("Failed to save live location:", error);
       }
@@ -1179,21 +1235,30 @@ export default function App() {
 
   const loadJoinedGroups = async (userId) => {
     if (!userId) return [];
-    const snap = await getDocs(query(collection(db, "groups"), where("members", "array-contains", userId)));
-    const groups = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    setJoinedGroups(groups);
-    return groups;
+    const { data: memberships } = await supabase.from('group_members').select('group_id').eq('user_id', userId);
+    const groupIds = memberships?.map(m => m.group_id) || [];
+    if (!groupIds.length) {
+      setJoinedGroups([]);
+      return [];
+    }
+    const { data: groups } = await supabase.from('groups').select('*').in('id', groupIds);
+    const { data: allMemberships } = await supabase.from('group_members').select('group_id,user_id').in('group_id', groupIds);
+    const membershipMap = {};
+    (allMemberships || []).forEach(m => {
+      if (!membershipMap[m.group_id]) membershipMap[m.group_id] = [];
+      membershipMap[m.group_id].push(m.user_id);
+    });
+    const normalizedGroups = (groups || []).map(g => normalizeGroup(g, membershipMap[g.id] || []));
+    setJoinedGroups(normalizedGroups);
+    return normalizedGroups;
   };
 
   const addGroupToUser = async (groupId) => {
     if (!currentUser?.id) return;
     try {
-      await updateDoc(doc(db, "users", currentUser.id), {
-        joinedGroups: arrayUnion(groupId),
-      });
-      setCurrentUser(prev => ({ ...(prev || {}), joinedGroups: [...new Set([...(prev?.joinedGroups || []), groupId])] }));
+      await supabase.from('group_members').insert([{ group_id: groupId, user_id: currentUser.id }]);
     } catch (error) {
-      console.warn("Failed to update user joined groups", error);
+      console.warn("Failed to add user to group", error);
     }
   };
 
@@ -1320,11 +1385,16 @@ export default function App() {
     if (!eventId) return;
     try {
       const rsvpValue = val === null ? null : val;
-      await updateDoc(doc(db, "events", eventId), { [`rsvps.${currentUser.id}`]: rsvpValue });
+      const { error } = await supabase.from('rsvps').upsert(
+        [{ event_id: eventId, user_id: currentUser.id, response: rsvpValue }],
+        { onConflict: 'event_id,user_id' }
+      ).select();
+      if (error) throw error;
       const event = events.find(e => e.id === eventId) || selectedEvent;
       if (selectedEvent?.id === eventId) {
-        setSelectedEvent(ev => ({ ...ev, rsvps: { ...ev.rsvps, [currentUser.id]: rsvpValue } }));
+        setSelectedEvent(ev => ({ ...ev, rsvps: { ...(ev.rsvps || {}), [currentUser.id]: rsvpValue } }));
       }
+      setEvents(prev => prev.map(ev => ev.id === eventId ? { ...ev, rsvps: { ...(ev.rsvps || {}), [currentUser.id]: rsvpValue } } : ev));
       if (rsvpValue !== null) {
         await notifyRsvpUpdate(event, rsvpValue);
       }
@@ -1345,10 +1415,9 @@ export default function App() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user) {
         const gUser = session.user;
-        const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
-        if (!snap.empty) {
-          const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
-          setCurrentUser(u);
+        const { data: users } = await supabase.from('users').select('*').eq('email', gUser.email).limit(1);
+        if (users && users.length > 0) {
+          setCurrentUser(users[0]);
           requestNotificationPermission();
         }
       }
@@ -1358,10 +1427,9 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
         const gUser = session.user;
-        const snap = await getDocs(query(collection(db, "users"), where("email", "==", gUser.email)));
-        if (!snap.empty) {
-          const u = { id: snap.docs[0].id, ...snap.docs[0].data() };
-          setCurrentUser(u);
+        const { data: users } = await supabase.from('users').select('*').eq('email', gUser.email).limit(1);
+        if (users && users.length > 0) {
+          setCurrentUser(users[0]);
           requestNotificationPermission();
         }
       } else {
@@ -1389,19 +1457,39 @@ export default function App() {
 
   useEffect(() => {
     if (!currentGroup) return;
-    const unsub = onSnapshot(doc(db, "groups", currentGroup.id), snap => {
-      if (snap.exists()) setGroupData({ id: snap.id, ...snap.data() });
-    });
-    return unsub;
+    const loadGroupData = async () => {
+      const { data: group } = await supabase.from('groups').select('*').eq('id', currentGroup.id).single();
+      const { data: memberships } = await supabase.from('group_members').select('user_id').eq('group_id', currentGroup.id);
+      setGroupData(normalizeGroup(group || {}, (memberships || []).map(m => m.user_id)));
+    };
+    loadGroupData();
+
+    const sub = supabase.channel(`group-${currentGroup.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'groups', filter: `id=eq.${currentGroup.id}` }, () => { loadGroupData(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [currentGroup?.id]);
 
   useEffect(() => {
     if (!currentGroup) return;
-    const unsub = onSnapshot(
-      query(collection(db, "events"), where("groupId", "==", currentGroup.id)),
-      snap => setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a,b) => b.createdAt - a.createdAt))
-    );
-    return unsub;
+    const loadEvents = async () => {
+      const { data: evts } = await supabase.from('events').select('*').eq('group_id', currentGroup.id).order('created_at', { ascending: false });
+      const eventsList = (evts || []).map(ev => normalizeEvent(ev));
+      const eventIds = eventsList.map(ev => ev.id);
+      if (eventIds.length) {
+        const { data: rsvps } = await supabase.from('rsvps').select('event_id,user_id,response').in('event_id', eventIds);
+        const rsvpMap = {};
+        (rsvps || []).forEach(r => {
+          rsvpMap[r.event_id] = rsvpMap[r.event_id] || {};
+          rsvpMap[r.event_id][r.user_id] = r.response;
+        });
+        setEvents(eventsList.map(ev => ({ ...ev, rsvps: rsvpMap[ev.id] || {} })));
+      } else {
+        setEvents([]);
+      }
+    };
+    loadEvents();
+
+    const sub = supabase.channel(`events-${currentGroup.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter: `group_id=eq.${currentGroup.id}` }, () => { loadEvents(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [currentGroup?.id]);
 
   useEffect(() => {
@@ -1412,35 +1500,41 @@ export default function App() {
       return;
     }
     console.log("Message listener: subscribing to group messages", activeGroupId);
-    const messagesCollection = collection(db, "groups", activeGroupId, "messages");
-    const msgQuery = query(messagesCollection, orderBy("createdAt", "asc"));
-    const unsub = onSnapshot(msgQuery, snap => {
-      console.log("Message listener: snapshot received", activeGroupId, snap.size, snap.docs.map(d => d.id));
-      setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, error => {
-      console.error("Message listener error", activeGroupId, error);
-    });
-    return unsub;
+    const loadMessages = async () => {
+      const { data: msgs } = await supabase.from('messages').select('*').eq('group_id', activeGroupId).order('created_at', { ascending: true });
+      setMessages((msgs || []).map(normalizeMessage));
+    };
+    loadMessages();
+
+    const sub = supabase.channel(`messages-${activeGroupId}`).on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `group_id=eq.${activeGroupId}` }, () => { loadMessages(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [currentGroup?.id, groupData?.id]);
 
   useEffect(() => {
     if (!selectedEvent?.id) return;
-    const unsub = onSnapshot(doc(db, "events", selectedEvent.id), snap => {
-      if (snap.exists()) {
-        const updatedEvent = { id: snap.id, ...snap.data() };
-        setSelectedEvent(updatedEvent);
-      }
-    });
-    return unsub;
+    const loadEvent = async () => {
+      const { data: event } = await supabase.from('events').select('*').eq('id', selectedEvent.id).single();
+      const { data: rsvps } = await supabase.from('rsvps').select('user_id,response').eq('event_id', selectedEvent.id);
+      const rsvpData = {};
+      (rsvps || []).forEach(r => { rsvpData[r.user_id] = r.response; });
+      setSelectedEvent(normalizeEvent(event || {}, rsvpData));
+    };
+    loadEvent();
+
+    const sub = supabase.channel(`events-${selectedEvent.id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'events', filter: `id=eq.${selectedEvent.id}` }, () => { loadEvent(); }).subscribe();
+    return () => { supabase.removeChannel(sub); };
   }, [selectedEvent?.id]);
 
   useEffect(() => {
-    if (!groupData?.members?.length) return;
-    const unsub = onSnapshot(collection(db, "users"), snap => {
-      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setUsers(all.filter(u => groupData.members.includes(u.id)));
-    });
-    return unsub;
+    if (!groupData?.members?.length) {
+      setUsers([]);
+      return;
+    }
+    const loadUsers = async () => {
+      const { data: groupUsers } = await supabase.from('users').select('*').in('id', groupData.members);
+      setUsers(groupUsers || []);
+    };
+    loadUsers();
   }, [groupData?.members]);
 
   const sendMessage = async (text) => {
@@ -1456,15 +1550,16 @@ export default function App() {
       return;
     }
     try {
-      const docRef = await addDoc(collection(db, "groups", activeGroup.id, "messages"), {
-        groupId: activeGroup.id,
+      const { data, error } = await supabase.from('messages').insert([{
+        group_id: activeGroup.id,
         text: cleanedText,
-        userId: currentUser.id,
-        userName: currentUser.name,
+        user_id: currentUser.id,
+        user_name: currentUser.name,
         color: currentUser.color,
-        createdAt: Date.now(),
-      });
-      console.log("sendMessage success", docRef.id, { groupId: activeGroup.id, text: cleanedText });
+        created_at: new Date().toISOString(),
+      }]).select();
+      if (error) throw error;
+      console.log("sendMessage success", data?.[0]?.id, { groupId: activeGroup.id, text: cleanedText });
     } catch (error) {
       console.error("sendMessage failed", error, { groupId: activeGroup.id, text: cleanedText });
     }
@@ -1479,14 +1574,8 @@ export default function App() {
 
   const deleteEventData = async (eventId) => {
     try {
-      const msgSnapshot = await getDocs(collection(db, "events", eventId, "messages"));
-      await Promise.all(msgSnapshot.docs.map(msg => deleteDoc(doc(db, "events", eventId, "messages", msg.id))));
-    } catch (error) {
-      console.warn("Failed to delete event messages:", error);
-    }
-
-    try {
-      await deleteDoc(doc(db, "events", eventId));
+      const { error } = await supabase.from('events').delete().eq('id', eventId);
+      if (error) throw error;
     } catch (error) {
       console.error("Failed to delete event document:", error);
     }
